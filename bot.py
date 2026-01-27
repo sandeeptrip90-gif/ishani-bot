@@ -122,7 +122,8 @@ To become India’s most trusted football engagement platform and create a stron
 )
 
 # --- ADMIN CONFIG ---
-ADMIN_ID = 123456789  # <--- Yahan apni asli Telegram User ID daalein
+# Note: ID hamesha number (int) honi chahiye verification ke liye
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))  # <--- Yahan apni asli Telegram User ID daalein
 
 async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check agar message bhejne wala Admin hai
@@ -239,6 +240,7 @@ if __name__ == "__main__":
 
     print("🚀 Ishani is Live! Group Privacy mode check kar lena @BotFather par.")
     app.run_polling()
+
 
 
 
