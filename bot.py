@@ -14,8 +14,8 @@ import os
 
 
 # ================= CONFIG =================
-TELEGRAM_TOKEN = "8380879763:AAGiUqqfX1jgrkZOjrczWV0yQjndwrJDZeo"
-GEMINI_API_KEY = "AIzaSyBq2EVCJLmzo-L5aWTAM2OWU-Puw5QUyHM"
+TOKEN = os.environ.get('TOKEN')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 
 # Gemini Client
 client = Client(api_key=GEMINI_API_KEY)
@@ -239,4 +239,5 @@ if __name__ == "__main__":
 
     print("🚀 Ishani is Live! Group Privacy mode check kar lena @BotFather par.")
     app.run_polling()
+
 
