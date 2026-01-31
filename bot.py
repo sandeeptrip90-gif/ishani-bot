@@ -148,27 +148,39 @@ async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not update.chat_member:
         return
 
-    old = update.chat_member.old_chat_member.status
-    new = update.chat_member.new_chat_member.status
+    # Status changes track karein
+    old_status = update.chat_member.old_chat_member.status
+    new_status = update.chat_member.new_chat_member.status
+    user_name = update.chat_member.new_chat_member.user.first_name
 
-    # Only when someone truly joins
-    if old in ["left", "kicked"] and new == "member":
-        new_name = update.chat_member.new_chat_member.user.first_name
-
-        try:
-            prompt = f"Write a 1-line super friendly Hinglish welcome for {new_name} who joined the group."
+    try:
+        # CASE 1: Naya Member Join hua
+        if new_status == "member" and old_status in ["left", "kicked", "restricted", None]:
+            prompt = f"Give a flirty and warm 1-line Hinglish welcome to {user_name} who just joined my group."
             response = client.models.generate_content(
-                model="models/gemini-pro",
+                model="gemini-1.5-flash",
                 contents=prompt,
-                config={"system_instruction": FRIENDLY_SYSTEM_PROMPT},
+                config={"system_instruction": FINAL_INSTRUCTION}
             )
+            text = response.text.strip() if response.text else f"Hey {user_name} smartie! Welcome to our vision. 😉"
 
-            welcome_text = response.text.strip() if response.text else f"Arre {new_name}, welcome bro! 😄"
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text)
+        # CASE 2: Member Leave kar gaya ya Kick ho gaya
+        elif new_status in ["left", "kicked"]:
+            prompt = f"Write a sassy or slightly sad 1-line Hinglish message because {user_name} left our group. Keep it flirty for the remaining members."
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+                config={"system_instruction": FINAL_INSTRUCTION}
+            )
+            text = response.text.strip() if response.text else f"Oh no, {user_name} chala gaya? Phir milenge!"
+        
+        else:
+            return # Baki status changes (like promoted to admin) ignore karein
 
-        except Exception as e:
-            print(f"Welcome Error: {e}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
+    except Exception as e:
+        print(f"Update Error: {e}")
 
 # ================= AI CHAT HANDLER =================
 async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,6 +242,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stop", stop_bot)) # Telegram pe /stop likhne par band hoga
 
+    # 2. Welcome & Exit Handler (Ye zaroori hai Join/Left ke liye)
+    # Note: ChatMemberHandler.CHAT_MEMBER use karna hai
+    app.add_handler(ChatMemberHandler(welcome_new_friend, ChatMemberHandler.CHAT_MEMBER))
+    
     # Handlers
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     app.add_handler(ChatMemberHandler(welcome_new_friend, ChatMemberHandler.CHAT_MEMBER))
@@ -239,7 +255,8 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
 
     print("🚀 Ishani is Live! Group Privacy mode check kar lena @BotFather par.")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 
 
