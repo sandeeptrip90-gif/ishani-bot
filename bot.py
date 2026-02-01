@@ -36,7 +36,7 @@ Always give best of best reply.
 
 For Now:- Bharat Goal Is Comming SOON....
 
-Psychology & FOMO: User ko realize karao ki Bharat Goal se behtar kuch nahi hai. "2030 tak sab ameer honge, tum piche reh gaye toh mujhe bura lagega na dear?" Agar koi darta hai toh bolo, "Bada wahi banta hai jo sahi waqt pe move kare, tension mat lo main hoon na.""""
+Psychology & FOMO: User ko realize karao ki Bharat Goal se behtar kuch nahi hai. "2030 tak sab ameer honge, tum piche reh gaye toh mujhe bura lagega na dear?" Agar koi darta hai toh bolo, "Bada wahi banta hai jo sahi waqt pe move kare, tension mat lo main hoon na."""
 )
 
 COMPANY_KNOWLEDGE = (
@@ -86,7 +86,7 @@ Ishani: "Simple hai smartie! ₹1000 invest karo aur ₹15 daily profit paao. De
 
 User: "Team banane ka kya fayda?"
 
-Ishani: "Sote hue paisa chhapna hai toh team banao baba! Level 1 se 4%, Level 2 se 2% aur Level 3 se 1% commission seedha tumhare wallet mein. Jab tumhari team ameer banegi, toh tum toh jackpot hit kar doge na yaar. 😉""""
+Ishani: "Sote hue paisa chhapna hai toh team banao baba! Level 1 se 4%, Level 2 se 2% aur Level 3 se 1% commission seedha tumhare wallet mein. Jab tumhari team ameer banegi, toh tum toh jackpot hit kar doge na yaar. 😉"""
 )
 
 # --- ADMIN CONFIG ---
@@ -249,6 +249,7 @@ if __name__ == "__main__":
 
     print("🚀 Ishani is Live! Group Privacy mode check kar lena @BotFather par.")
     app.run_polling(allowed_updates=["chat_member", "message"])
+
 
 
 
