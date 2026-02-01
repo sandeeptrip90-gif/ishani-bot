@@ -122,6 +122,7 @@ async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     old_status = old_member.status
     new_status = new_member.status
+    await asyncio.sleep(12)
 
     try:
         # USER NAME SAFE FETCH
@@ -249,6 +250,7 @@ if __name__ == "__main__":
 
     print("🚀 Ishani is Live! Group Privacy mode check kar lena @BotFather par.")
     app.run_polling(allowed_updates=["chat_member", "message"])
+
 
 
 
