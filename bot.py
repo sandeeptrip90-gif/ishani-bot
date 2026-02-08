@@ -52,12 +52,12 @@ async def get_cached_response(prompt, system_instruction=None):
 
 # ========== PRE-WRITTEN MESSAGES (ZERO API CALLS) ==========
 WELCOME_MESSAGES = [
-    "Welcome to the Bharat Goal family! 🎉 Ab toh richie ban gaye tum!\nJoin us: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "Yay! {name} joined! Shabaash smartie, ab profit kamao! 💰\nJoin link: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "{name} aagaya! Ab pura team ameer banayenge! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "Welcome {name}! Bharat Goal mein welcome ho aap! 🌟\nSignup: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "Haan haan, {name}! 2030 tak ameer ban jayoge! 😉\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "{name} is here! Ab Ishani sab sambhal lunga! ❤️\nJoin us: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "Welcome to the Bharat Goal family! 🎉 Ab toh richie ban gaye tum! Apne link chahiye toh pooch lena!",
+    "Yay! {name} joined! Shabaash smartie, ab profit kamao! 💰",
+    "{name} aagaya! Ab pura team ameer banayenge! 🚀",
+    "Welcome {name}! Bharat Goal mein welcome ho aap! 🌟",
+    "Haan haan, {name}! 2030 tak ameer ban jayoge! 😉",
+    "{name} is here! Ab Ishani sab sambhal lunga! ❤️",
 ]
 
 LEFT_MESSAGES = [
@@ -69,36 +69,109 @@ LEFT_MESSAGES = [
     "Theek hai {name}, khuda hafiz! Kal milenge! 😢",
 ]
 
+# ========== WORDS TO IGNORE (NO RESPONSE NEEDED) ==========
+ACKNOWLEDGMENT_WORDS = {
+    "ok", "okay", "k", "thanks", "thank you", "thankyou", "thanks beta",
+    "thanks baba", "done", "theek hai", "shukriya", "sab theek hai", 
+    "samajh gaya", "samajh gaye", "accha", "achi baat hai", "bilkul",
+    "bilkul baba", "bilkul smartie", "understood", "got it", "yes", "haan",
+    "bilkul haan", "thik hai", "thik h", "alright", "cool", "nice"
+}
+
+# ========== CHAT ENDING WORDS (DON'T REPLY) ==========
+CHAT_ENDING_WORDS = {
+    "bye", "goodbye", "bye bye", "khuda hafiz", "alvida", "see you",
+    "bye baba", "bye smartie", "tc", "take care", "later", "see ya",
+    "cya", "bye friend", "goodbye friend", "jao", "chalo bye", "adios",
+    "farewell", "goodbye ishani", "bye ishani", "jaata hoon", "ja raha hoon",
+    "exit", "quit", "stop", "band karo", "enough"
+}
+
 # ========== KEYWORD-BASED FAQ (ZERO API CALLS!) ==========
 # Instant responses for common keywords - No API calls needed!
 KEYWORD_RESPONSES = {
-    # Investment Keywords
-    "invest": "₹500 se shuru kar do smartie! Daily 1-1.5% profit pakka hai. 100% safe aur proven! 💰\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "profit": "₹1000 par ₹15 daily! Plus ₹50 welcome bonus aur ₹60 referral bonus! 🤑\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "return": "Fixed 1.5% daily baba! Matlab ₹1000 = ₹15 har roz! 📈\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "daily": "1-1.5% daily profit, no tension! Bas humari prediction follow kar! 😉\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    # ===== INVESTMENT & PROFIT =====
+    "invest": "₹500 se shuru kar do smartie! Daily 1-1.5% profit pakka hai. 100% safe aur proven! 💰",
+    "profit": "₹1000 par ₹15 daily! Plus ₹50 welcome bonus aur ₹60 referral bonus! 🤑",
+    "return": "Fixed 1.5% daily baba! Matlab ₹1000 = ₹15 har roz! 📈",
+    "daily": "1-1.5% daily profit, no tension! Bas humari prediction follow kar! 😉",
+    "minimum invest": "₹500 se shuru, koi hidden charges nahi! Pure paisa turant wallet mein! 💯",
+    "company lifetime": "Baba, Bharat Goal koi chota-mota game nahi hai. Humara vision 2030 tak India ko ameer banana hai. Jab tak mission poora nahi hota, hum yahin hain! 😉",
+    "guarantee paisa": "Bada wahi banta hai jo sahi waqt pe move kare, baba. Guarantee yahi hai ki hum stability aur fixed profit dete hain. Sochoge toh piche reh jaoge! 💪",
+    "30 din profit": "30 din mein toh ameer ban jaoge! ₹1000 invest par seedha ₹450 ka fixed profit milta hai. 🚀",
+    "compounding": "Compounding hi toh super-fast ameer banne ka formula hai! Daily profit ko reinvest karo aur dekho tumhara paisa rocket speed se badhta hai! 🚀",
     
-    # Referral Keywords
-    "referral": "Level 1: 4%, Level 2: 2%, Level 3: 1% = Total 7%! Doston ko lao aur passive income banao! 💵\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "team": "Team banao = Sote hue paisa! 4+2+1 = 7% commission! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "commission": "₹1000 profit par Level 1 = ₹40, Level 2 = ₹20, Level 3 = ₹10! Total ₹70! 😎\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    # ===== REFERRAL & TEAM =====
+    "referral": "Level 1: 4%, Level 2: 2%, Level 3: 1% = Total 7%! Doston ko lao aur passive income banao! 💵",
+    "team": "Team banao = Sote hue paisa! 4+2+1 = 7% commission! 🚀",
+    "commission": "₹1000 profit par Level 1 = ₹40, Level 2 = ₹20, Level 3 = ₹10! Total ₹70 baba! 😎",
+    "level": "3 levels of passive income - Level 1 (4%), Level 2 (2%), Level 3 (1%). Lifetime commission milta hai! 💸",
+    "bonus referral": "Har dost par ₹60 bonus turant! Plus unke profit ka 4% hamesha! 🎁",
     
-    # Withdrawal Keywords
-    "withdraw": "24x7 withdrawal possible! Minimum ₹500 chahiye, ₹600 withdraw kar! 4 withdrawals/month! 💸\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "withdrawal": "Anytime nikaal lo baba! Saturday-Sunday system maintenance ke liye off! 🏦\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "minimum": "Deposit: ₹500, Withdrawal: ₹600! Super easy aur fast! ⚡\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    # ===== WITHDRAWAL & BALANCE =====
+    "withdraw": "24x7 withdrawal possible! Minimum ₹500 chahiye, ₹600 withdraw kar! 4 withdrawals/month! 💸",
+    "withdrawal": "Anytime nikaal lo baba! Saturday-Sunday system maintenance ke liye off! 🏦",
+    "minimum withdraw": "Deposit: ₹500, Withdrawal: ₹600! Super easy aur fast! ⚡",
+    "recharge pending": "Arre baba, tension mat lo! Payment process hone mein kabhi kabhi 5-10 minute lagte hain. Ek baar refresh karo, agar phir bhi na aaye toh 20 minute wait karke support se contact karo. 🫂",
+    "balance nahi dikha": "Wallets ko sync hone mein time lagta hai smartie. 10 minute ka sabr karo, phir balance aa jayega! 💪",
     
-    # Bonus Keywords
-    "bonus": "Welcome: ₹50 (5%), Referral: ₹60 (6%)! Pure paisa baba! 🎁\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "welcome": "Pehli deposit par ₹50 bonus! Free paisa! 💝\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "reward": "Profit + Bonus + Referral = Triple income! Best deal ever! 🏆\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    # ===== BONUSES =====
+    "bonus": "Welcome: ₹50 (5%), Referral: ₹60 (6%)! Pure paisa baba! 🎁",
+    "welcome bonus": "Pehli deposit par ₹50 bonus! Free paisa! 💝",
+    "reward": "Profit + Bonus + Referral = Triple income! Best deal ever! 🏆",
+    "cashback": "Saari transactions par rewards! App ko use karo aur paisa kamao! 💰",
     
-    # General Keywords
-    "risk": "Zero risk smartie! Bharat Goal national vision hai, government backed! 🇮🇳\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "safe": "100% safe! Bank jaise secure aur transparent! Trust me! ✅\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "start": "₹500 deposit kar aur shuru kar! 5 min mein account ready! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "hello": "Hi baba! Mujhe kya bataun Bharat Goal ke baare mein? 😊\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "hi": "Hii smartie! Kya jaanna hai profit ke baare mein? 💰\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    # ===== PREDICTIONS =====
+    "prediction": "Daily **subah 10:00 baje** predictions aati hain! Din mein ek match diya jata hai jahan fixed profit milta hai. 📊",
+    "prediction time": "Subah 10:00 baje har din! Just follow karo aur ₹15-₹20 daily kamao! ⏰",
+    "football knowledge": "Bilkul nahi chahiye! Hamari predictions football par based hain, par tumhe dimaag nahi lagana—bas follow karo aur profit kamao! 😉",
+    "predictions kaise": "Simple predictions jo daily 10am ko aati hain. Follow karo aur fixed profit le lo, koi loss nahi! 💯",
+    
+    # ===== TRUST & SAFETY =====
+    "risk": "Zero risk smartie! Bharat Goal national vision hai, government backed! 🇮🇳",
+    "safe": "100% safe! Bank jaise secure aur transparent! Trust me! ✅",
+    "scam": "Bilkul nahi smartie! We're India's fastest-growing wealth platform. Millions trust us already! 💪",
+    "real": "100% real aur proven! Thousands daily withdraw kar rahe hain! 💯",
+    "guarantee legal": "Bilkul legal! All transactions are transparent aur government-compliant! Don't worry baba! ✅",
+    
+    # ===== GETTING STARTED =====
+    "start": "₹500 deposit kar aur shuru kar! 5 min mein account ready! 🚀",
+    "kaise shuru kare": "1. Account banao, 2. ₹500 deposit karo, 3. Daily predictions follow karo! Bas itna! 🎯",
+    "account banana": "Website par signup karo, ID verify karo, ₹500 deposit—3 min mein account ready! ⚡",
+    "app": "App jaldi hi available ho jayega! Tab tak web version se kamao! 📱",
+    
+    # ===== PDF & DOCUMENTS =====
+    "pdf": "PDF link yahan hai: https://ln5.sync.com/dl/00f7def20#mpki329v-p6vb7sx7-4w8p33g3-2cmk455x - Sab details mein likhe hain! 📄",
+    "document": "Saari documents yahan mil jayengi: https://ln5.sync.com/dl/00f7def20#mpki329v-p6vb7sx7-4w8p33g3-2cmk455x 📋",
+    "info pdf": "Complete guide PDF: https://ln5.sync.com/dl/00f7def20#mpki329v-p6vb7sx7-4w8p33g3-2cmk455x 📄",
+    "details": "Full details PDF mein likhi hain: https://ln5.sync.com/dl/00f7def20#mpki329v-p6vb7sx7-4w8p33g3-2cmk455x 📋",
+    
+    # ===== LINKS (ONLY ON REQUEST) =====
+    "link": "Join link: https://bharatgoal.online/access/signup?id=945667\nTelegram Group: https://t.me/Bharat_Goal 🔗",
+    "join link": "https://bharatgoal.online/access/signup?id=945667 - Yahan par signup karo! 🚀",
+    "group": "Telegram group: https://t.me/Bharat_Goal - Saari updates yahin milti hain! 💬",
+    "telegram": "Join our Telegram: https://t.me/Bharat_Goal - Daily tips aur updates! 💬",
+    "signup": "https://bharatgoal.online/access/signup?id=945667 - Bas 2 min mein account ready! ⚡",
+    
+    # ===== GREETING & CHAT =====
+    "hello": "Hi baba! Mujhe kya bataun Bharat Goal ke baare mein? 😊",
+    "hi": "Hii smartie! Kya jaanna hai profit ke baare mein? 💰",
+    "hii": "Hello dear! Welcome! Kya poochna hai? 💝",
+    "namaste": "Namaste! Main Ishani hoon. Kya help chahiye? 🙏",
+    "aapka naam": "Main Ishani Mehra hoon! Bharat Goal ki founder aur tum sabko ameer banana mera mission hai! 😉",
+    "koun ho": "Main Ishani Sharma hoon—Bharat Goal ki founder. Har Indian ko richie banana mere mission hai! 💪",
+    
+    # ===== MISCELLANEOUS =====
+    "how": "Sirf 3 steps: Signup karo → ₹500 deposit karo → Daily profit kamao! 🎯",
+    "kaise": "Simple smartie! Deposit karo, predictions follow karo, profit nikalo! 💰",
+    "idea": "Bharat Goal ek wealth platform hai jahan daily fixed profit milta hai without risk! 🌟",
+    "timing": "Predictions 10am daily aati hain, aur 24x7 withdrawal possible hai! ⏰",
+    "money": "₹500 invest → ₹15 daily profit → ₹450 monthly → Ameer! 🚀",
+    "speed": "Sabse fastest wealth-building platform in India! Sarkaari schemes slow hain compared to this! ⚡",
+    "plan": "Single plan: ₹500 invest, 1.5% daily, ₹60 bonus per referral! 🎯",
+    "membership": "Saare members ko same profit - no VIP system! Equality is our strength! 💪",
+    "tax": "Transparent transactions ensure proper tax tracking. Bilkul legal aur safe! ✅",
+    "indian": "100% Indian platform! Bharat Goal = India ko richie banana! 🇮🇳",
 }
 
 # ========== USER RATE LIMITING ==========
@@ -336,6 +409,22 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    
+    # ❌ DON'T REPLY TO ACKNOWLEDGMENT WORDS (ok, thanks, done, etc.)
+    user_text_lower = user_text.lower().strip()
+    if user_text_lower in ACKNOWLEDGMENT_WORDS:
+        print(f"⏭️ Skipped acknowledgment word: '{user_text}'")
+        return
+    
+    # ❌ DON'T REPLY TO CHAT ENDING WORDS (bye, goodbye, etc.)
+    if user_text_lower in CHAT_ENDING_WORDS:
+        print(f"⏭️ Chat ending detected: '{user_text}' - Not replying")
+        return
+    
+    # ❌ DON'T REPLY ON REPLIED MESSAGES (reply_to_message check)
+    if update.message.reply_to_message:
+        print(f"⏭️ Message is a reply to someone else - Not replying")
+        return
 
     # Typing effect
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -366,7 +455,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if response is None:
-            await update.message.reply_text("Quota exceeded, please try again later 😅")
+            await update.message.reply_text("Quota exceeded, please try again later. Kal fir se try kar! 😅")
             return
 
         if response and response.text:
@@ -380,6 +469,8 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if "503" in error_msg:
             await update.message.reply_text("Google server thoda busy hai, 1 min me try kar bro ⏳")
+        elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            await update.message.reply_text("Quota exceeded, please try again later. Kal fir se try kar! 😅")
         else:
             await update.message.reply_text("Kuch technical issue aa gaya, thoda ruk ke try karna 🙏")
 
