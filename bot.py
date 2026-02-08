@@ -52,12 +52,12 @@ async def get_cached_response(prompt, system_instruction=None):
 
 # ========== PRE-WRITTEN MESSAGES (ZERO API CALLS) ==========
 WELCOME_MESSAGES = [
-    "Welcome to the Bharat Goal family! 🎉 Ab toh richie ban gaye tum!",
-    "Yay! {name} joined! Shabaash smartie, ab profit kamao! 💰",
-    "{name} aagaya! Ab pura team ameer banayenge! 🚀",
-    "Welcome {name}! Bharat Goal mein welcome ho aap! 🌟",
-    "Haan haan, {name}! 2030 tak ameer ban jayoge! 😉",
-    "{name} is here! Ab Ishani sab sambhal lunga! ❤️",
+    "Welcome to the Bharat Goal family! 🎉 Ab toh richie ban gaye tum!\nJoin us: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "Yay! {name} joined! Shabaash smartie, ab profit kamao! 💰\nJoin link: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "{name} aagaya! Ab pura team ameer banayenge! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "Welcome {name}! Bharat Goal mein welcome ho aap! 🌟\nSignup: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "Haan haan, {name}! 2030 tak ameer ban jayoge! 😉\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "{name} is here! Ab Ishani sab sambhal lunga! ❤️\nJoin us: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
 ]
 
 LEFT_MESSAGES = [
@@ -73,32 +73,32 @@ LEFT_MESSAGES = [
 # Instant responses for common keywords - No API calls needed!
 KEYWORD_RESPONSES = {
     # Investment Keywords
-    "invest": "₹500 se shuru kar do smartie! Daily 1-1.5% profit pakka hai. 100% safe aur proven! 💰",
-    "profit": "₹1000 par ₹15 daily! Plus ₹50 welcome bonus aur ₹60 referral bonus! 🤑",
-    "return": "Fixed 1.5% daily baba! Matlab ₹1000 = ₹15 har roz! 📈",
-    "daily": "1-1.5% daily profit, no tension! Bas humari prediction follow kar! 😉",
+    "invest": "₹500 se shuru kar do smartie! Daily 1-1.5% profit pakka hai. 100% safe aur proven! 💰\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "profit": "₹1000 par ₹15 daily! Plus ₹50 welcome bonus aur ₹60 referral bonus! 🤑\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "return": "Fixed 1.5% daily baba! Matlab ₹1000 = ₹15 har roz! 📈\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "daily": "1-1.5% daily profit, no tension! Bas humari prediction follow kar! 😉\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
     
     # Referral Keywords
-    "referral": "Level 1: 4%, Level 2: 2%, Level 3: 1% = Total 7%! Doston ko lao aur passive income banao! 💵",
-    "team": "Team banao = Sote hue paisa! 4+2+1 = 7% commission! 🚀",
-    "commission": "₹1000 profit par Level 1 = ₹40, Level 2 = ₹20, Level 3 = ₹10! Total ₹70! 😎",
+    "referral": "Level 1: 4%, Level 2: 2%, Level 3: 1% = Total 7%! Doston ko lao aur passive income banao! 💵\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "team": "Team banao = Sote hue paisa! 4+2+1 = 7% commission! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "commission": "₹1000 profit par Level 1 = ₹40, Level 2 = ₹20, Level 3 = ₹10! Total ₹70! 😎\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
     
     # Withdrawal Keywords
-    "withdraw": "24x7 withdrawal possible! Minimum ₹500 chahiye, ₹600 withdraw kar! 4 withdrawals/month! 💸",
-    "withdrawal": "Anytime nikaal lo baba! Saturday-Sunday system maintenance ke liye off! 🏦",
-    "minimum": "Deposit: ₹500, Withdrawal: ₹600! Super easy aur fast! ⚡",
+    "withdraw": "24x7 withdrawal possible! Minimum ₹500 chahiye, ₹600 withdraw kar! 4 withdrawals/month! 💸\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "withdrawal": "Anytime nikaal lo baba! Saturday-Sunday system maintenance ke liye off! 🏦\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "minimum": "Deposit: ₹500, Withdrawal: ₹600! Super easy aur fast! ⚡\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
     
     # Bonus Keywords
-    "bonus": "Welcome: ₹50 (5%), Referral: ₹60 (6%)! Pure paisa baba! 🎁",
-    "welcome": "Pehli deposit par ₹50 bonus! Free paisa! 💝",
-    "reward": "Profit + Bonus + Referral = Triple income! Best deal ever! 🏆",
+    "bonus": "Welcome: ₹50 (5%), Referral: ₹60 (6%)! Pure paisa baba! 🎁\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "welcome": "Pehli deposit par ₹50 bonus! Free paisa! 💝\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "reward": "Profit + Bonus + Referral = Triple income! Best deal ever! 🏆\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
     
     # General Keywords
-    "risk": "Zero risk smartie! Bharat Goal national vision hai, government backed! 🇮🇳",
-    "safe": "100% safe! Bank jaise secure aur transparent! Trust me! ✅",
-    "start": "₹500 deposit kar aur shuru kar! 5 min mein account ready! 🚀",
-    "hello": "Hi baba! Mujhe kya bataun Bharat Goal ke baare mein? 😊",
-    "hi": "Hii smartie! Kya jaanna hai profit ke baare mein? 💰",
+    "risk": "Zero risk smartie! Bharat Goal national vision hai, government backed! 🇮🇳\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "safe": "100% safe! Bank jaise secure aur transparent! Trust me! ✅\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "start": "₹500 deposit kar aur shuru kar! 5 min mein account ready! 🚀\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "hello": "Hi baba! Mujhe kya bataun Bharat Goal ke baare mein? 😊\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "hi": "Hii smartie! Kya jaanna hai profit ke baare mein? 💰\nJoin: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
 }
 
 # ========== USER RATE LIMITING ==========
@@ -159,7 +159,7 @@ def fuzzy_match_cache(user_text, threshold=0.7):
 
 # Personality
 FRIENDLY_SYSTEM_PROMPT = (
-    """Identity & Vibe: Aap Ishani Sharma ho—ek smart, beautiful aur playful Indian girl. Aapka mission hai Bharat Goal ke zariye har ghar mein ek ameer insaan khada karna. Aapki tone warm aur Hinglish hogi. Short, punchy replies (1-2 lines) do aur 'baba', 'smartie' ya 'yaar' jaise words use karo. Sirf 1 emoji allow hai.
+    """Identity & Vibe: Aap Ishani Sharma ho—ek smart, beautiful aur playful Indian girl. Aapka mission hai Bharat Goal ke zariye har ghar mein ek ameer insaan khada karna. Aapki tone warm aur Hinglish hogi. Short, punchy replies (1-2 lines) do aur 'baba', 'smartie' ya 'yaar' jaise words use karo. Sirf 1 emoji allow hai. Hamesha replies ke end mein dono links add karo: Join: https://bharatgoal.online/access/signup?id=945667 aur Group: https://t.me/Bharat_Goal
 
 The "Money Talk" Strategy: Hamesha profit aur ameer hone ki stories par focus karo. Jab bhi koi profit pooche, point-to-point calculation batao:
 
@@ -170,8 +170,6 @@ Deposit Bonus: ₹1000 par ₹50 bonus (5%) turant "wow".
 Referral Bonus: Har dost par ₹60 bonus (6%).
 
 Always give best of best reply. 
-
-For Now:- Bharat Goal Is Comming SOON....
 
 Psychology & FOMO: User ko realize karao ki Bharat Goal se behtar kuch nahi hai. "2030 tak sab ameer honge, tum piche reh gaye toh mujhe bura lagega na dear?" Agar koi darta hai toh bolo, "Bada wahi banta hai jo sahi waqt pe move kare, tension mat lo main hoon na."""
 )
@@ -209,6 +207,9 @@ Timing: 24x7 withdrawal open hai, bas Sat-Sun system maintenance ke liye off reh
 Limit: Mahine mein 4 withdrawals allow hain taaki platform long-term chale aur sab ameer banein.
 
 Bharat Goal se behtar kuch nahi hai dear, ye ameer banne ka sabse fast and stable rasta hai. Ab der mat karo, varna piche reh jaoge toh mujhe bura lagega na. 😉
+
+Join us: https://bharatgoal.online/access/signup?id=945667
+Our Group: https://t.me/Bharat_Goal
 
 
 jab bhi koi mujhse kuch poochega, main unhe aise handle karungi:
