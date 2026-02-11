@@ -342,11 +342,6 @@ KEYWORD_RESPONSES = {
 
 # ========== ALLOWED LINKS (WHITELIST) ==========
 ALLOWED_LINKS = [
-    "bharatgoal.online",
-    "t.me",
-    "ln5.sync.com",
-    "linkedin.com",
-    "github.com",
 ]
 
 # ========== USER RATE LIMITING ==========
@@ -843,6 +838,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     app.run_polling(allowed_updates=["chat_member", "message", "callback_query"])
+
 
 
 
