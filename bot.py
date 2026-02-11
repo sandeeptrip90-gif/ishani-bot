@@ -371,16 +371,37 @@ def get_keyword_response(user_text: str) -> Optional[str]:
     
     return None
 
-# ========== LINK DETECTION ==========
-def has_disallowed_links(text: str) -> bool:
-    """Check if text contains disallowed links"""
-    url_pattern = r'https?://[^\s]+'
-    urls = re.findall(url_pattern, text)
+# ========== COMPREHENSIVE LINK DETECTION ==========
+def has_any_links(text: str) -> bool:
+    """Check if text contains ANY type of link"""
+    if not text:
+        return False
     
-    for url in urls:
-        is_allowed = any(allowed in url for allowed in ALLOWED_LINKS)
-        if not is_allowed:
-            return True
+    # Pattern 1: HTTP/HTTPS links
+    http_pattern = r'https?://[^\s]+'
+    if re.search(http_pattern, text):
+        return True
+    
+    # Pattern 2: Telegram t.me links
+    tme_pattern = r't\.me/[^\s]+'
+    if re.search(tme_pattern, text):
+        return True
+    
+    # Pattern 3: Telegram usernames (@username)
+    username_pattern = r'@[a-zA-Z0-9_]{5,32}'
+    if re.search(username_pattern, text):
+        return True
+    
+    # Pattern 4: www links (without http/https)
+    www_pattern = r'www\.[^\s]+'
+    if re.search(www_pattern, text):
+        return True
+    
+    # Pattern 5: Domain-like patterns (word.word)
+    domain_pattern = r'[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}'
+    if re.search(domain_pattern, text):
+        return True
+    
     return False
 
 # ========== SYSTEM PROMPTS ==========
@@ -617,36 +638,52 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message is a reply - Not replying")
         return
     
-    # ❌ DON'T REPLY TO OTHER BOTS
-    if update.message.from_user.is_bot:
-        print(f"⏭️ Message from bot - Not replying")
-        return
-    
-    # ❌ Delete messages with disallowed links (except from admins)
+    # ========== LINK DELETION SYSTEM (GROUP ONLY) ==========
     if update.effective_chat.type in ["group", "supergroup"]:
-        is_admin = False
+        # Check user status (admin or not)
+        is_admin_or_creator = False
+        is_bot_message = update.message.from_user.is_bot
         
-        # Check if sender is admin
-        try:
-            user_member = await update.effective_chat.get_member(user_id)
-            if user_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
-                is_admin = True
-        except:
-            pass
+        # Skip link check for bot messages (allowed)
+        if not is_bot_message:
+            try:
+                user_member = await update.effective_chat.get_member(user_id)
+                if user_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    is_admin_or_creator = True
+            except Exception as e:
+                print(f"⚠️ Could not check user status: {e}")
+                is_admin_or_creator = False
         
-        # Delete disallowed links if NOT from admin
-        if has_disallowed_links(user_text) and not is_admin:
+        # CHECK FOR LINKS: Delete if regular user (not admin/bot) has any link
+        has_links = has_any_links(user_text)
+        
+        if has_links and not is_admin_or_creator and not is_bot_message:
+            # DELETE THE MESSAGE
             try:
                 await update.message.delete()
-                print(f"🗑️ Deleted message with disallowed link")
+                print(f"🗑️ Deleted message from user {user_id} containing links")
                 return
             except Exception as e:
                 print(f"⚠️ Could not delete message: {e}")
+                return
         
-        # Don't reply if sender is admin
-        if is_admin:
-            print(f"⏭️ Message from group admin - Not replying")
+        # Don't reply to admin/bot messages
+        if is_admin_or_creator:
+            print(f"⏭️ Message from group admin/creator - Not replying")
             return
+        
+        if is_bot_message:
+            print(f"⏭️ Message from bot - Not replying")
+            return
+    
+    # For non-bot messages in groups
+    if not update.message.from_user.is_bot and update.effective_chat.type not in ["group", "supergroup"]:
+        print(f"Processing private message from user {user_id}")
+    
+    # ❌ DON'T REPLY TO OTHER BOTS (double check for private messages)
+    if update.message.from_user.is_bot:
+        print(f"⏭️ Message from bot - Not replying")
+        return
     
     # Show typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -838,7 +875,6 @@ if __name__ == "__main__":
     print("=" * 50)
     
     app.run_polling(allowed_updates=["chat_member", "message", "callback_query"])
-
 
 
 
