@@ -1,5 +1,5 @@
 ﻿python-telegram-bot==21.0
-googe-genai
+google-genai
 httpx
 anyio
 
