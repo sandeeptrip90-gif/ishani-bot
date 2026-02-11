@@ -1,4 +1,8 @@
-python-telegram-bot==21.0
-google-genai
+﻿python-telegram-bot==21.0
+googe-genai
 httpx
 anyio
+
+bot.py
+requirements.txt
+data.json
