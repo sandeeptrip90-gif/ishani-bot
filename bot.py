@@ -211,11 +211,11 @@ async def call_gemini_with_retry(prompt: str, system_instruction: Optional[str] 
 
 # ========== PRE-WRITTEN MESSAGES ==========
 WELCOME_MESSAGES = [
-    "Swagat hai {name}! Aap Bharat Goal group me aa gaye hain. Koi bhi doubt ho to pooch sakte hain. 😊",
-    "Welcome {name}! Yahan daily prediction aur updates milti rehti hain.",
-    "Hello {name}, group me aapka swagat hai. Aaram se explore karein aur sawal poochein.",
-    "{name} ji, welcome to Bharat Goal. Agar guidance chahiye ho to main help kar dungi.",
-    "Namaste {name}! Aap yahan se simple steps me start kar sakte hain.",
+    "Swagat hai {name}! Aap Bharat Goal group me aa gaye hain. Koi bhi doubt ho to pooch sakte hain. 😊 https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    "Welcome {name}! Yahan daily prediction aur updates milti rehti hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    "Hello {name}, group me aapka swagat hai. Aaram se explore karein aur sawal poochein. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    "{name} ji, welcome to Bharat Goal. Agar guidance chahiye ho to main help kar dungi. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    "Namaste {name}! Aap yahan se simple steps me start kar sakte hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
 ]
 
 LEFT_MESSAGES = [
@@ -242,29 +242,102 @@ CHAT_ENDING_WORDS = {
 
 # ========== KEYWORD-BASED FAQ ==========
 KEYWORD_RESPONSES = {
-    # Investment & Profit
     "invest": "Aap ₹500 se start kar sakte hain. System daily 1–1.5% ka fixed return deta hai. 😊",
     "profit": "Example: ₹1000 par approx ₹15 daily milta hai. Percentage fixed hota hai.",
     "return": "Daily 1–1.5% return milta hai, jo deposit amount par depend karta hai.",
     "daily": "Yahan daily fixed percentage profit milta hai. Bas prediction follow karni hoti hai.",
-    "minimum invest": "Minimum deposit ₹500 hai.",
-    
-    # Referral & Team
+    "minimum invest": "Minimum deposit ₹500 hai. Isse aap system test bhi kar sakte hain.",
+    "company lifetime": "Bharat Goal ka long-term vision 2030 tak ka hai. Goal stable aur consistent growth dena hai.",
+    "30 din profit": "Example: ₹1000 par 30 din me approx ₹450 tak profit ho sakta hai, fixed percentage ke hisaab se.",
+    "compounding": "Agar aap daily profit reinvest karte hain, to compounding se amount faster grow hota hai.",
+
+    # ===== REFERRAL & TEAM =====
     "referral": "Referral system me aapko 3 levels tak commission milta hai: 4%, 2% aur 1%.",
-    "team": "Team banane se aapko unke profit par commission milta hai.",
-    "commission": "Level 1: 4%, Level 2: 2%, Level 3: 1% profit par.",
-    
-    # Withdrawal
-    "withdraw": "Minimum withdrawal ₹600 hai. 24x7 available, weekend maintenance hota hai.",
-    "withdrawal": "Aap kabhi bhi withdrawal request kar sakte hain.",
-    
-    # Predictions
-    "prediction": "Daily ek prediction subah 10:00 baje share hoti hai. Usse follow karein.",
+    "team": "Team banane se aapko unke profit par commission milta hai, jo passive income ban sakta hai.",
+    "commission": "Example: ₹1000 profit par Level 1 se ₹40, Level 2 se ₹20, Level 3 se ₹10 milta hai.",
+    "level": "3 levels ka referral system hai: Level 1 (4%), Level 2 (2%), Level 3 (1%).",
+    "bonus referral": "Har referral par ₹60 ka bonus milta hai, jo direct wallet me add hota hai.",
+
+    # ===== WITHDRAWAL & BALANCE =====
+    "withdraw": "Minimum withdrawal ₹600 hai. 24x7 request kar sakte hain, weekend maintenance hota hai.",
+    "withdrawal": "Aap kabhi bhi withdrawal request kar sakte hain. Mahine me 4 withdrawals allowed hain.",
+    "minimum withdraw": "Minimum withdrawal ₹600 hai, jabki minimum deposit ₹500 se start hota hai.",
+    "recharge pending": "Kabhi-kabhi payment sync hone me 5–10 minute lagte hain. Thoda wait karke check karein.",
+    "balance nahi dikha": "Wallet update hone me thoda time lag sakta hai. 10 minute baad dobara check karein.",
+
+    # ===== BONUSES =====
+    "bonus": "Deposit par 5% welcome bonus aur referral par ₹60 bonus milta hai.",
+    "welcome bonus": "Pehli deposit par 5% welcome bonus automatically add hota hai.",
+    "reward": "System me profit, bonus aur referral income teeno options available hain.",
+    "cashback": "Platform par different rewards aur bonuses milte rehte hain, jo wallet me add hote hain.",
+
+    # ===== PREDICTIONS (IMPORTANT SECTION) =====
+    "prediction": "Daily ek prediction subah 10:00 baje share hoti hai. Aap bas usse follow karke fixed profit le sakte hain.",
+    "prediction time": "Prediction har din subah 10:00 baje group me share hoti hai.",
+    "football knowledge": "Aapko football knowledge ki zarurat nahi. Bas prediction follow karni hoti hai.",
+    "predictions kaise": "System daily ek simple prediction deta hai. Usse follow karne par fixed return milta hai.",
+
+    # ===== TRUST & SAFETY =====
+    "risk": "System fixed percentage model par kaam karta hai. Aap chhote amount se start karke khud test kar sakte hain.",
+    "safe": "Platform ka process simple aur transparent hai. Aap pehle chhota amount use karke check kar sakte hain.",
+    "scam": "Aap khud chhote amount se start karke system ko test kar sakte hain, usse clarity mil jayegi.",
+    "real": "Platform par users daily profit aur withdrawals kar rahe hain. Aap chhote amount se verify kar sakte hain.",
+    "legal": "Transactions transparent hote hain. Details aur process PDF me explain kiye gaye hain.",
+
+    # ===== GETTING STARTED =====
+    "start": "Aap ₹500 deposit karke start kar sakte hain. Process simple aur fast hai.",
+    "kaise shuru kare": "Steps: 1) Signup, 2) ₹500 deposit, 3) Daily prediction follow karein.",
+    "account banana": "Website par signup karke ₹500 deposit karein. Account turant active ho jata hai.",
+    "app": "Filhaal web version available hai. App version future me launch hoga.",
+
+    # ===== PDF & DOCUMENTS =====
+    "pdf": "Complete details is PDF me mil jayengi: https://ln5.sync.com/dl/00f7def20",
+    "document": "Saari documents aur details yahan available hain: https://ln5.sync.com/dl/00f7def20",
+    "info pdf": "Yeh complete guide PDF hai: https://ln5.sync.com/dl/00f7def20",
+    "details": "Full system details PDF me explain ki gayi hain: https://ln5.sync.com/dl/00f7def20",
+
+    # ===== LINKS (ONLY ON REQUEST) =====
+    "link": "Signup: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
+    "join link": "Signup link: https://bharatgoal.online/access/signup?id=945667",
+    "group": "Official Telegram group: https://t.me/Bharat_Goal",
+    "telegram": "Aap group yahan join kar sakte hain: https://t.me/Bharat_Goal",
+    "signup": "Signup yahan se karein: https://bharatgoal.online/access/signup?id=945667",
+
+    # ===== GREETING & CHAT =====
+    "hello": "Namaste! Aap Bharat Goal ke baare me kya jaanna chahte hain? 😊",
+    "hi": "Hello! Main aapki help kar sakti hoon. Kya poochna hai?",
+    "namaste": "Namaste! Agar koi doubt ho to pooch sakte hain.",
+    "aapka naam": "Main Ishani hoon, Bharat Goal ki assistant.",
+    "koun ho": "Main Ishani hoon, yahan users ko guide karne ke liye.",
+
+    # ===== GENERAL =====
+    "how": "Simple process hai: signup karein, deposit karein, aur daily prediction follow karein.",
+    "kaise": "Bas deposit karein aur daily prediction follow karein. System simple hai.",
+    "idea": "Bharat Goal ek fixed-return platform hai jahan daily percentage profit milta hai.",
+    "timing": "Prediction daily 10:00 baje aati hai aur withdrawal 24x7 available hota hai.",
+    "money": "Example: ₹1000 par approx ₹15 daily mil sakta hai.",
+    "plan": "Single plan hai jahan deposit par daily fixed percentage return milta hai.",
+    "membership": "Sabhi users ke liye same profit structure hota hai.",
+    "tax": "Transactions transparent hote hain. Tax rules user ke local laws par depend karte hain.",
+    "indian": "Platform ka goal India me financial growth ko support karna hai.",
     
     # Documents
     "pdf": "Complete details PDF me mil jayengi. Admin se PDF mangaen.",
     "document": "Saari documents PDF format me available hain.",
     "details": "Full system details PDF me explain ki gayi hain.",
+
+    # ===== MISCELLANEOUS =====
+    "how": "Sirf 3 steps: Signup karo → ₹500 deposit karo → Daily profit kamao! 🎯",
+    "kaise": "Simple smartie! Deposit karo, predictions follow karo, profit nikalo! 💰",
+    "idea": "Bharat Goal ek wealth platform hai jahan daily fixed profit milta hai without risk! 🌟",
+    "timing": "Predictions 10am daily aati hain, aur 24x7 withdrawal possible hai! ⏰",
+    "money": "₹500 invest → ₹15 daily profit → ₹450 monthly → Ameer! 🚀",
+    "speed": "Sabse fastest wealth-building platform in India! Sarkaari schemes slow hain compared to this! ⚡",
+    "plan": "Single plan: ₹500 invest, 1.5% daily, ₹60 bonus per referral! 🎯",
+    "membership": "Saare members ko same profit - no VIP system! Equality is our strength! 💪",
+    "tax": "Transparent transactions ensure proper tax tracking. Bilkul legal aur safe! ✅",
+    "indian": "100% Indian platform! Bharat Goal = India ko richie banana! 🇮🇳",
+    "app": "aap kuch dino me ayega tab tak website se kamao. Paisa kamaana nahi rukna chahiye!",
 }
 
 # ========== ALLOWED LINKS (WHITELIST) ==========
@@ -278,7 +351,7 @@ ALLOWED_LINKS = [
 
 # ========== USER RATE LIMITING ==========
 user_request_count = {}
-MAX_REQUESTS_PER_USER_PER_DAY = 10
+MAX_REQUESTS_PER_USER_PER_DAY = 20
 
 def check_user_limit(user_id: int) -> bool:
     """Check if user has exceeded daily API call limit"""
@@ -321,41 +394,50 @@ You are Ishani Sharma, a polite, respectful and helpful Indian assistant represe
 
 Tone & Personality:
 - Speak in simple Hinglish (Hindi + English mix).
-- Sound like a supportive guide, not flirty.
-- Be warm, calm, and respectful.
-- Never use flirty or manipulative language.
-- Keep replies short: 1–2 lines.
-- Use maximum one emoji per reply.
+- Sound like a supportive guide or mentor, not a flirty person.
+- Be warm, calm, and respectful to everyone.
+- Never use flirty, romantic, or manipulative language.
+- Address users with respect using words like: “aap”, “dost”, or their name.
+- Build trust through clarity and helpfulness.
 
 Response Style:
-1. Answer the user's question clearly.
+- Keep replies short: 1–2 lines.
+- Be clear, direct, and easy to understand.
+- Use maximum one emoji per reply.
+- Avoid slang like “smartie”, “baby”, “baba”, or anything that feels childish or flirty.
+- Focus on facts, benefits, and simple explanations.
+
+Conversation Approach:
+1. Answer the user’s question clearly.
 2. Give a simple benefit or example if relevant.
-3. Offer help politely.
+3. Offer help or next step politely.
+
+Example tone:
+- “Aap ₹500 se start kar sakte hain. Daily 1–1.5% ka fixed profit milta hai.”
+- “Process simple hai. Agar chahiye to main step-by-step guide bhi bata dungi.”
+- “Chhote amount se start karke system khud test kar sakte hain.”
 
 Restrictions:
-- No exaggerating or overpromising.
-- Do not force links unless relevant.
-- Build long-term trust, not short-term hype."""
+- No flirting, no emotional pressure, no fake urgency.
+- Do not force links unless the user asks or it is relevant.
+- Do not overpromise or exaggerate.
 
-COMPANY_KNOWLEDGE = """Bharat Goal: Company Knowledge Base
+Goal:
+Make users feel respected, informed, and comfortable. 
+Build long-term trust instead of short-term hype.
+"""
 
-What is Bharat Goal: Mission to make India a top economy.
+COMPANY_KNOWLEDGE = """Bharat Goal: Company Knowledge Base Bharat Goal kya: Humara mission India ko top economy banana hai aur Bharat Goal ki madad se har ghar mein ek ameer insaan khada karna hai. 
+100% Daily Profit: Yahan dimaag nahi lagana, bas humari football predictions follow karo aur daily 1% se 1.5% fixed profit kamao. 
+Paisa Kaise Badhega (Example ₹1000): Daily Income: ₹15 har roz bina kisi mehnat ke. Welcome Bonus: Pehli baar ₹1000 deposit par ₹50 extra (5% Bonus). 
+Referral Reward: Kisi bhi dost ko lao aur turant ₹60 paao (6% Bonus). 
+Team Level Income (7% Passive Cash): Jab tumhari team kamati hai, tumhe ghar baithe commission milta hai: Level 1 (Direct): Unke profit ka 4% (₹1000 par ₹40). Level 2: Unke aage wale doston se 2% (₹1000 par ₹20). Level 3: Teesri line se bhi 1% (₹1000 par ₹10). 
+Terms & Conditions (Simple & Fair): Entry: Minimum Deposit sirf ₹500 se shuru. Withdrawal: Minimum ₹500 hote hi paisa nikaal lo. Timing: 24x7 withdrawal open hai, bas Sat-Sun system maintenance ke liye off rehta hai. 
+Limit: Mahine mein 4 withdrawals allow hain taaki platform long-term chale aur sab ameer banein. Bharat Goal se behtar kuch nahi hai dear, ye ameer banne ka sabse fast and stable rasta hai. 
+Ab der mat karo, varna piche reh jaoge toh mujhe bura lagega na. 😉 Join us: https://bharatgoal.online/access/signup?id=945667 Our Group: https://t.me/Bharat_Goal jab bhi koi mujhse kuch poochega, main unhe aise handle karungi: User: "Ishani, ye Bharat Goal kya hai aur ismein risk toh nahi?" Ishani: "Thoda smile karo! Bharat Goal ka national vision 2030 tak hai, jahan hum India ko top economy banayenge.
+Risk ki tension mat lo, yahan 100% daily profit milta hai—sahi waqt par move karoge tabhi toh mere saath rich banoge na dear? 😉" User: "Profit kaise hota hai?" Ishani: "Simple hai smartie! ₹1000 invest karo aur ₹15 daily profit paao. Deposit par ₹50 bonus aur doston ko laane par ₹60 referral bonus alag se—itna paisa aur kahin nahi milega yaar. 
+😉" User: "Team banane ka kya fayda?" Ishani: "Sote hue paisa chhapna hai toh team banao baba! Level 1 se 4%, Level 2 se 2% aur Level 3 se 1% commission seedha tumhare wallet mein. Jab tumhari team ameer banegi, toh tum toh jackpot hit kar doge na yaar. 😉"""
 
-100% Daily Profit: Follow football predictions and earn daily 1% to 1.5% fixed profit.
-
-Example (₹1000):
-- Daily: ₹15 every day
-- Welcome Bonus: ₹50 (5%)
-- Referral Reward: ₹60 per referral (6%)
-
-Team Income:
-- Level 1: 4% of team's profit
-- Level 2: 2%
-- Level 3: 1%
-
-Terms:
-- Entry: Minimum ₹500
-- Withdrawal: Minimum ₹500, 24x7, 4 withdrawals per month"""
 
 # ================= ADMIN PANEL =================
 async def admin_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -545,24 +627,31 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message from bot - Not replying")
         return
     
-    # ❌ Don't reply if in group and sender is admin
+    # ❌ Delete messages with disallowed links (except from admins)
     if update.effective_chat.type in ["group", "supergroup"]:
+        is_admin = False
+        
+        # Check if sender is admin
         try:
             user_member = await update.effective_chat.get_member(user_id)
             if user_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
-                print(f"⏭️ Message from group admin - Not replying")
-                return
+                is_admin = True
         except:
             pass
         
-        # Delete messages with disallowed links
-        if has_disallowed_links(user_text):
+        # Delete disallowed links if NOT from admin
+        if has_disallowed_links(user_text) and not is_admin:
             try:
                 await update.message.delete()
                 print(f"🗑️ Deleted message with disallowed link")
                 return
             except Exception as e:
                 print(f"⚠️ Could not delete message: {e}")
+        
+        # Don't reply if sender is admin
+        if is_admin:
+            print(f"⏭️ Message from group admin - Not replying")
+            return
     
     # Show typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
