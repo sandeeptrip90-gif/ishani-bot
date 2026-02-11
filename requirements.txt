@@ -2,7 +2,3 @@
 google-genai
 httpx
 anyio
-
-bot.py
-requirements.txt
-data.json
