@@ -1,5 +1,5 @@
 """
-Telegram Bot: Ishani - Bharat Goal Assistant
+Telegram Bot: Ishani - Chelsea Football Assistant
 Features:
 - Admin Panel with inline buttons
 - Auto link delete system for groups
@@ -18,10 +18,15 @@ import json
 import os
 import random
 import re
+import threading
 from datetime import datetime, time
-from typing import Optional, Dict, Any
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 
+import httpx
+from dotenv import load_dotenv
 from google.genai import Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ChatMemberStatus
@@ -36,12 +41,54 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
+load_dotenv()
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 
-# Gemini Client
-client = Client(api_key=GEMINI_API_KEY)
+# Gemini Client (key from .env)
+client = Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_DEFAULT_MODEL = "models/gemini-3.5-flash"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
+MASKED_KEY = "••••••"
+
+
+def _is_masked_key(value: str) -> bool:
+    text = (value or "").strip()
+    return not text or set(text) <= set("•*·.x")
+
+
+def _mask_key(value: str) -> str:
+    key = (value or "").strip()
+    if len(key) < 8:
+        return MASKED_KEY if key else ""
+    return key[:4] + "…" + key[-4:]
+
+
+def reload_gemini_key_from_env() -> str:
+    """Re-read GEMINI_API_KEY from .env so Test Connection uses the live key."""
+    global GEMINI_API_KEY, client
+    load_dotenv(override=True)
+    GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if GEMINI_API_KEY:
+        client = Client(api_key=GEMINI_API_KEY)
+    return GEMINI_API_KEY
+
+
+def resolve_gemini_key(form_key: str = "") -> str:
+    if form_key and not _is_masked_key(form_key):
+        return form_key.strip()
+    env_key = reload_gemini_key_from_env()
+    if env_key:
+        return env_key
+    return (dm.get_ai_config().get("api_key") or "").strip()
+
+
+def normalize_gemini_model(model: str) -> str:
+    name = (model or "").strip() or GEMINI_DEFAULT_MODEL
+    if not name.startswith("models/") and name.startswith("gemini"):
+        return f"models/{name}"
+    return name
 
 # ================= JSON MEMORY SYSTEM =================
 class DataManager:
@@ -78,6 +125,12 @@ class DataManager:
                 "total_messages": 0,
                 "total_users": 0,
                 "total_broadcasts": 0
+            },
+            "ai_config": {
+                "provider": "gemini",
+                "endpoint": "https://generativelanguage.googleapis.com",
+                "api_key": "",
+                "model": "models/gemini-3.5-flash"
             }
         }
     
@@ -142,6 +195,156 @@ class DataManager:
         """Check if bot is muted"""
         return self.data.get("bot_muted", False)
 
+    def get_ai_config(self) -> Dict[str, Any]:
+        """AI provider settings (Gemini, OpenAI, or custom OpenAI-compatible)."""
+        defaults = {
+            "provider": "gemini",
+            "endpoint": "https://generativelanguage.googleapis.com",
+            "api_key": "",
+            "model": "models/gemini-3.5-flash"
+        }
+        stored = self.data.get("ai_config") or {}
+        merged = {**defaults, **stored}
+        if not merged.get("provider"):
+            merged["provider"] = "gemini"
+        self.data["ai_config"] = merged
+        return merged
+
+    def save_ai_config(self, endpoint: str, api_key: str, model: str, provider: str = "gemini"):
+        current = self.get_ai_config()
+        current["provider"] = (provider or "gemini").strip().lower()
+        current["endpoint"] = (endpoint or "").strip()
+        if api_key and api_key.strip() and not _is_masked_key(api_key):
+            current["api_key"] = api_key.strip()
+        current["model"] = (model or "").strip()
+        self.data["ai_config"] = current
+        self.save()
+        return current
+
+    def uses_openai_compatible(self) -> bool:
+        cfg = self.get_ai_config()
+        provider = (cfg.get("provider") or "gemini").lower()
+        return provider in ("custom", "openai") and bool(cfg.get("endpoint") and cfg.get("api_key"))
+
+    # ----- per-user chat history (chats/<user_id>.json, date sections) -----
+    CHAT_DIR = Path("chats")
+    MAX_CHAT_MESSAGES = 80
+
+    def _chat_file(self, user_id: int) -> Path:
+        self.CHAT_DIR.mkdir(exist_ok=True)
+        return self.CHAT_DIR / f"{int(user_id)}.json"
+
+    def load_chat(self, user_id: int, first_name: str = "User") -> Dict[str, Any]:
+        path = self._chat_file(user_id)
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "sections" in data:
+                    pref = ((data.get("memory") or {}).get("preferred_name") or "").strip()
+                    if pref:
+                        data["name"] = pref
+                    elif not data.get("name") and first_name:
+                        data["name"] = first_name
+                    data["telegram_name"] = first_name
+                    return data
+            except Exception as e:
+                print(f"⚠️ Chat load error {user_id}: {e}")
+        return {
+            "user_id": int(user_id),
+            "name": first_name or "User",
+            "memory": {"about": "", "topics": [], "last_focus": ""},
+            "sections": {},
+        }
+
+    def save_chat(self, record: Dict[str, Any]):
+        user_id = record.get("user_id")
+        if user_id is None:
+            return
+        sections = record.get("sections") or {}
+        flat: List[tuple] = []
+        for day in sorted(sections.keys()):
+            for msg in sections.get(day) or []:
+                flat.append((day, msg))
+        if len(flat) > self.MAX_CHAT_MESSAGES:
+            keep = flat[-self.MAX_CHAT_MESSAGES:]
+            trimmed: Dict[str, List] = {}
+            for day, msg in keep:
+                trimmed.setdefault(day, []).append(msg)
+            record["sections"] = trimmed
+        try:
+            with self._chat_file(user_id).open("w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠️ Chat save error {user_id}: {e}")
+
+    def append_chat(self, user_id: int, first_name: str, role: str, text: str) -> Dict[str, Any]:
+        record = self.load_chat(user_id, first_name)
+        pref = ((record.get("memory") or {}).get("preferred_name") or "").strip()
+        record["name"] = pref or record.get("name") or first_name or "User"
+        record["telegram_name"] = first_name
+        day = datetime.now().strftime("%Y-%m-%d")
+        record.setdefault("sections", {}).setdefault(day, []).append({
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "role": role,
+            "text": (text or "").strip()[:1500],
+        })
+        if role == "user":
+            self._refresh_memory(record, text or "")
+        self.save_chat(record)
+        user_key = str(user_id)
+        if user_key in self.data.get("users", {}):
+            self.data["users"][user_key]["chat_file"] = str(self._chat_file(user_id))
+            self.data["users"][user_key]["last_focus"] = (record.get("memory") or {}).get("last_focus", "")
+            self.save()
+        return record
+
+    def recent_chat(self, user_id: int, first_name: str = "User", limit: int = 24) -> List[Dict[str, str]]:
+        """Full recent thread (ChatGPT-style), oldest first."""
+        record = self.load_chat(user_id, first_name)
+        messages: List[Dict[str, str]] = []
+        for day in sorted((record.get("sections") or {}).keys()):
+            messages.extend(record["sections"].get(day) or [])
+        return messages[-limit:]
+
+    @staticmethod
+    def _refresh_memory(record: Dict[str, Any], user_text: str):
+        mem = record.setdefault("memory", {"about": "", "topics": [], "last_focus": "", "preferred_name": ""})
+        text = (user_text or "").strip()
+        mem["last_focus"] = text[:180]
+        skip_topics = {
+            "hi", "hii", "hello", "hey", "ok", "okay", "haan", "haa", "yes",
+            "thanks", "thank you", "bye", "good morning", "good night",
+        }
+        if text and text.lower() not in skip_topics and len(text) > 8:
+            topics = [t for t in (mem.get("topics") or []) if t]
+            low = {t.lower() for t in topics}
+            snippet = text[:90]
+            if snippet.lower() not in low:
+                topics.append(snippet)
+            mem["topics"] = topics[-10:]
+        name_hit = re.search(
+            r"(?:mera\s+na+m(?:e)?|my\s+name\s+is)\s+(?:hai\s+)?([A-Za-z\u0900-\u097F]{2,24})",
+            text,
+            re.IGNORECASE,
+        )
+        if name_hit:
+            raw_name = re.sub(r"[^A-Za-z\u0900-\u097F]", "", name_hit.group(1)).strip()
+            if raw_name.lower() not in {"hai", "hoon", "hun", "tha", "from", "the"}:
+                nice = raw_name[:1].upper() + raw_name[1:]
+                mem["preferred_name"] = nice
+                record["name"] = nice
+                mem["about"] = f"Unka naam {nice} hai. Telegram pe sir/ji laga ho to ignore karo, naam {nice} hi bolo."
+        city = re.search(
+            r"(?:i(?:'?m| am) from|reh(?:ta|ti) (?:hoon|hun)|main)\s+([A-Za-z\u0900-\u097F]{3,24})\s+(?:se|from)",
+            text,
+            re.IGNORECASE,
+        )
+        if city:
+            extra = f"Jagah: {city.group(1).strip()}"
+            if extra not in (mem.get("about") or ""):
+                mem["about"] = ((mem.get("about") or "") + " " + extra).strip()
+
 # Initialize data manager
 dm = DataManager("data.json")
 
@@ -160,7 +363,7 @@ async def get_cached_response_api(prompt: str, system_instruction: Optional[str]
     json_cached = dm.get_cached_response(prompt)
     if json_cached:
         print(f"✅ JSON Cache HIT (saved API call!)")
-        return type('obj', (object,), {'text': json_cached})()
+        return type('obj', (object,), {'text': clean_reply_text(json_cached)})()
     
     # Check memory cache
     cache_key = get_cache_key(prompt, system_instruction)
@@ -168,54 +371,151 @@ async def get_cached_response_api(prompt: str, system_instruction: Optional[str]
         print(f"✅ Memory Cache HIT (saved API call!)")
         return response_cache[cache_key]
     
-    response = await call_gemini_with_retry(
+    response = await call_ai_with_retry(
         prompt=prompt,
         system_instruction=system_instruction
     )
     
     if response and response.text:
+        cleaned = clean_reply_text(response.text)
+        response = type('obj', (object,), {'text': cleaned})()
         if len(response_cache) < MAX_CACHE_SIZE:
             response_cache[cache_key] = response
-        dm.cache_response(prompt, response.text)
+        dm.cache_response(prompt, cleaned)
         print(f"💾 Response cached")
     
     return response
 
-# ========== GEMINI API RETRY HANDLER ==========
-async def call_gemini_with_retry(prompt: str, system_instruction: Optional[str] = None, max_retries: int = 3) -> Optional[Any]:
-    """Call Gemini API with retry logic"""
+# ========== AI PROVIDER (custom OpenAI-compatible, else Gemini) ==========
+def _openai_chat_url(endpoint: str) -> str:
+    url = (endpoint or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1"):
+        return url + "/chat/completions"
+    if "/v1/" in url:
+        return url
+    return url + "/v1/chat/completions"
+
+
+def _simple_text_response(text: str):
+    return type("obj", (object,), {"text": text})()
+
+
+async def call_custom_openai(
+    prompt: str,
+    system_instruction: Optional[str] = None,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Any]:
+    cfg = dm.get_ai_config()
+    url = _openai_chat_url(cfg.get("endpoint", ""))
+    api_key = cfg.get("api_key") or ""
+    model = (cfg.get("model") or "").strip() or "gpt-4o-mini"
+    if not url or not api_key:
+        raise RuntimeError("Custom AI provider is not configured")
+
+    messages = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    for item in history or []:
+        role = "assistant" if item.get("role") == "bot" else "user"
+        content = (item.get("text") or "").strip()
+        if content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": prompt})
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "messages": messages, "max_tokens": 220, "temperature": 0.8}
+
+    async with httpx.AsyncClient(timeout=60) as http:
+        res = await http.post(url, headers=headers, json=payload)
+        data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+        if res.status_code >= 400:
+            err = data.get("error", {})
+            msg = err.get("message") if isinstance(err, dict) else str(err) or res.text
+            raise RuntimeError(f"Custom AI {res.status_code}: {msg}")
+        choices = data.get("choices") or []
+        text = ""
+        if choices:
+            text = (choices[0].get("message") or {}).get("content") or choices[0].get("text") or ""
+        return _simple_text_response(text or "")
+
+
+def generate_gemini_content(
+    prompt: str,
+    system_instruction: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    history: Optional[List[Dict[str, str]]] = None,
+):
+    key = (api_key or resolve_gemini_key()).strip()
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is missing in .env")
+    gemini_client = client if (client and key == GEMINI_API_KEY) else Client(api_key=key)
+    model_name = normalize_gemini_model(model or dm.get_ai_config().get("model") or GEMINI_DEFAULT_MODEL)
+    contents = prompt
+    if history:
+        lines = []
+        for item in history:
+            who = "Ishani" if item.get("role") == "bot" else "User"
+            lines.append(f"{who}: {(item.get('text') or '').strip()}")
+        contents = "Previous chat:\n" + "\n".join(lines) + "\n\nCurrent message:\n" + prompt
+    return gemini_client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config={
+            "system_instruction": system_instruction or FRIENDLY_SYSTEM_PROMPT,
+            "safety_settings": [],
+        },
+    )
+
+
+async def call_ai_with_retry(
+    prompt: str,
+    system_instruction: Optional[str] = None,
+    max_retries: int = 3,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Any]:
+    """Call Gemini (default) or a saved OpenAI-compatible custom provider."""
+    use_custom = dm.uses_openai_compatible()
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model="models/gemini-flash-latest",
-                contents=prompt,
-                config={
-                    "system_instruction": system_instruction or FRIENDLY_SYSTEM_PROMPT,
-                    "safety_settings": [],
-                },
-            )
-            return response
+            if use_custom:
+                return await call_custom_openai(prompt, system_instruction, history=history)
+            return generate_gemini_content(prompt, system_instruction, history=history)
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+            is_busy = "503" in error_str or "UNAVAILABLE" in error_str
+            is_rate_limited = "429" in error_str or "RESOURCE_EXHAUSTED" in error_str
+            if is_busy or is_rate_limited:
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"⏳ Rate limited. Retrying in {wait_time}s...")
+                    wait_time = 10 if is_busy else 2 ** attempt
+                    print(f"⏳ Server busy (503). Retrying in {wait_time}s..." if is_busy else f"⏳ Rate limited. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
                 else:
                     print(f"❌ Rate limit exceeded after {max_retries} retries.")
+                    if is_busy:
+                        raise
                     return None
             else:
                 raise
     return None
 
+
+call_gemini_with_retry = call_ai_with_retry
+
 # ========== PRE-WRITTEN MESSAGES ==========
 WELCOME_MESSAGES = [
-    "Swagat hai {name}! Aap Bharat Goal group me aa gaye hain. Koi bhi doubt ho to pooch sakte hain. 😊 https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    "Welcome {name}! Yahan daily prediction aur updates milti rehti hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    "Hello {name}, group me aapka swagat hai. Aaram se explore karein aur sawal poochein. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    "{name} ji, welcome to Bharat Goal. Agar guidance chahiye ho to main help kar dungi. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    "Namaste {name}! Aap yahan se simple steps me start kar sakte hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    "Swagat hai {name}! Aap Chelsea Football group me aa gaye hain. Koi bhi doubt ho to pooch sakte hain. 😊 https://t.me/+Qv2p0w48dy81NDFl",
+    # "Welcome {name}! Yahan daily prediction aur updates milti rehti hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    # "Hello {name}, group me aapka swagat hai. Aaram se explore karein aur sawal poochein. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    # "{name} ji, welcome to Chelsea Football. Agar guidance chahiye ho to main help kar dungi. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
+    # "Namaste {name}! Aap yahan se simple steps me start kar sakte hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
 ]
 
 LEFT_MESSAGES = [
@@ -240,124 +540,124 @@ CHAT_ENDING_WORDS = {
     "stop", "band karo", "enough", "jaata hoon"
 }
 
+def clean_reply_text(text: str) -> str:
+    """Strip RAG citation junk like [cite: 4] from replies."""
+    if not text:
+        return text
+    text = re.sub(r"\[cite:[^\]]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[source:[^\]]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r" +([,.!?;:])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
+
+
 # ========== KEYWORD-BASED FAQ ==========
 KEYWORD_RESPONSES = {
-    "invest": "Aap ₹500 se start kar sakte hain. System daily 1–1.5% ka fixed return deta hai. 😊",
-    "profit": "Example: ₹1000 par approx ₹15 daily milta hai. Percentage fixed hota hai.",
-    "return": "Daily 1–1.5% return milta hai, jo deposit amount par depend karta hai.",
-    "daily": "Yahan daily fixed percentage profit milta hai. Bas prediction follow karni hoti hai.",
-    "minimum invest": "Minimum deposit ₹500 hai. Isse aap system test bhi kar sakte hain.",
-    "company lifetime": "Bharat Goal ka long-term vision 2030 tak ka hai. Goal stable aur consistent growth dena hai.",
-    "30 din profit": "Example: ₹1000 par 30 din me approx ₹450 tak profit ho sakta hai, fixed percentage ke hisaab se.",
-    "compounding": "Agar aap daily profit reinvest karte hain, to compounding se amount faster grow hota hai.",
+"invest": "Aap ₹200 se start kar sakte hain. System daily 3–5% ka prediction match return deta hai. 😊",
+"profit": "Daily 3% se 5% tak ka profit prediction matches ke through milta hai.",
+"return": "Daily 3–5% return milta hai, jo prediction matches par depend karta hai.",
+"daily": "Yahan daily 3% to 5% profit milta hai. Bas prediction follow karni hoti hai.",
+"minimum invest": "Minimum deposit ₹200 hai. Isse aap system test bhi kar sakte hain.",
+"company lifetime": "Chelsea Football ka goal long-term stable aur fast growth dena hai.",
+"30 din profit": "Example: Daily 3% to 5% percentage ke hisaab se monthly achha compound profit ho sakta hai.",
+"compounding": "Agar aap daily profit reinvest karte hain, to compounding se amount faster grow hota hai.",
 
-    # ===== REFERRAL & TEAM =====
-    "referral": "Referral system me aapko 3 levels tak commission milta hai: 4%, 2% aur 1%.",
-    "team": "Team banane se aapko unke profit par commission milta hai, jo passive income ban sakta hai.",
-    "commission": "Example: ₹1000 profit par Level 1 se ₹40, Level 2 se ₹20, Level 3 se ₹10 milta hai.",
-    "level": "3 levels ka referral system hai: Level 1 (4%), Level 2 (2%), Level 3 (1%).",
-    "bonus referral": "Har referral par ₹60 ka bonus milta hai, jo direct wallet me add hota hai.",
+# ===== REFERRAL & TEAM =====
+"referral": "Referral system me har referral par 8% reward bonus milta hai[cite: 3].",
+"team": "Team banane se aapko 6 levels tak team income milti hai[cite: 1], jo total 15% passive income ban sakti hai[cite: 1].",
+"commission": "Level 1: 7%, Level 2: 3%, Level 3: 2%, Level 4: 1%, Level 5: 1%, Level 6: 1% commission milta hai[cite: 1].",
+"level": "6 levels ka income system hai[cite: 1]: LV1 (7%), LV2 (3%), LV3 (2%), LV4 (1%), LV5 (1%), LV6 (1%)[cite: 1].",
+"bonus referral": "Every referral par 8% reward bonus direct wallet me add hota hai[cite: 3].",
 
-    # ===== WITHDRAWAL & BALANCE =====
-    "withdraw": "Minimum withdrawal ₹600 hai. 24x7 request kar sakte hain, weekend maintenance hota hai.",
-    "withdrawal": "Aap kabhi bhi withdrawal request kar sakte hain. Mahine me 4 withdrawals allowed hain.",
-    "minimum withdraw": "Minimum withdrawal ₹600 hai, jabki minimum deposit ₹500 se start hota hai.",
-    "recharge pending": "Kabhi-kabhi payment sync hone me 5–10 minute lagte hain. Thoda wait karke check karein.",
-    "balance nahi dikha": "Wallet update hone me thoda time lag sakta hai. 10 minute baad dobara check karein.",
+# ===== WITHDRAWAL & BALANCE =====
+"withdraw": "Minimum withdrawal ₹500 hai[cite: 4]. Fast withdrawal options available hain[cite: 4, 5].",
+"withdrawal": "Aap withdrawal request kar sakte hain[cite: 4]. Minimum withdrawal amount ₹500 hai[cite: 4].",
+"minimum withdraw": "Minimum withdrawal ₹500 hai[cite: 4], jabki minimum deposit ₹200 se start hota hai[cite: 4].",
+"recharge pending": "Kabhi-kabhi payment sync hone me 5–10 minute lagte hain. Fast transaction options available hain[cite: 4, 5].",
+"balance nahi dikha": "Wallet update hone me thoda time lag sakta hai. 10 minute baad dobara check karein.",
 
-    # ===== BONUSES =====
-    "bonus": "Deposit par 5% welcome bonus aur referral par ₹60 bonus milta hai.",
-    "welcome bonus": "Pehli deposit par 5% welcome bonus automatically add hota hai.",
-    "reward": "System me profit, bonus aur referral income teeno options available hain.",
-    "cashback": "Platform par different rewards aur bonuses milte rehte hain, jo wallet me add hote hain.",
+# ===== BONUSES =====
+"bonus": "Every deposit par 6% deposit bonus[cite: 2] aur referral par 8% reward bonus milta hai[cite: 3]. Total level income 15% hai[cite: 1].",
+"welcome bonus": "Har deposit par 6% deposit bonus automatically add hota hai[cite: 2].",
+"reward": "System me daily profit[cite: 5], 6% deposit bonus[cite: 2], 8% referral bonus[cite: 3] aur level income options available hain[cite: 1].",
+"cashback": "Platform par different deposit bonuses (6%) aur referral rewards (8%) milte hain[cite: 2, 3].",
 
-    # ===== PREDICTIONS (IMPORTANT SECTION) =====
-    "prediction": "Daily ek prediction subah 10:00 baje share hoti hai. Aap bas usse follow karke fixed profit le sakte hain.",
-    "prediction time": "Prediction har din subah 10:00 baje group me share hoti hai.",
-    "football knowledge": "Aapko football knowledge ki zarurat nahi. Bas prediction follow karni hoti hai.",
-    "predictions kaise": "System daily ek simple prediction deta hai. Usse follow karne par fixed return milta hai.",
+# ===== PREDICTIONS (IMPORTANT SECTION) =====
+"prediction": "Daily live match predictions share hoti hain[cite: 2, 3, 5]. Aap bas unhe follow karke 3% to 5% daily profit le sakte hain[cite: 5].",
+"prediction time": "Live matches predictions daily platform/group me share hoti hain[cite: 2, 3, 5].",
+"football knowledge": "Aapko extra football knowledge ki zarurat nahi. Accurate predictions ko bas follow karna hota hai[cite: 2, 5].",
+"predictions kaise": "System daily simple predictions deta hai[cite: 2, 5]. Unhe follow karne par 3–5% return milta hai[cite: 5].",
 
-    # ===== TRUST & SAFETY =====
-    "risk": "System fixed percentage model par kaam karta hai. Aap chhote amount se start karke khud test kar sakte hain.",
-    "safe": "Platform ka process simple aur transparent hai. Aap pehle chhota amount use karke check kar sakte hain.",
-    "scam": "Aap khud chhote amount se start karke system ko test kar sakte hain, usse clarity mil jayegi.",
-    "real": "Platform par users daily profit aur withdrawals kar rahe hain. Aap chhote amount se verify kar sakte hain.",
-    "legal": "Transactions transparent hote hain. Details aur process PDF me explain kiye gaye hain.",
+# ===== TRUST & SAFETY =====
+"risk": "System prediction match model par kaam karta hai[cite: 2, 5]. Aap ₹200 se start karke khud test kar sakte hain[cite: 4].",
+"safe": "Platform safe & secure transactions provide karta hai[cite: 1, 4, 5]. Aap pehle chhota amount (₹200) use karke check kar sakte hain[cite: 4].",
+"scam": "Aap khud ₹200 minimum deposit se start karke system ko test kar sakte hain[cite: 4].",
+"real": "Platform par multiple payment options (UPI, PhonePe, GPay, Paytm, USDT) transparently available hain[cite: 4].",
+"legal": "Transactions safe, secure aur transparent hote hain[cite: 1, 4, 5].",
 
-    # ===== GETTING STARTED =====
-    "start": "Aap ₹500 deposit karke start kar sakte hain. Process simple aur fast hai.",
-    "kaise shuru kare": "Steps: 1) Signup, 2) ₹500 deposit, 3) Daily prediction follow karein.",
-    "account banana": "Website par signup karke ₹500 deposit karein. Account turant active ho jata hai.",
-    "app": "Filhaal web version available hai. App version future me launch hoga.",
+# ===== GETTING STARTED =====
+"start": "Aap ₹200 deposit karke start kar sakte hain[cite: 4]. Process simple aur fast hai[cite: 4, 5].",
+"kaise shuru kare": "Steps: 1) Join Now / Signup[cite: 1, 2, 3, 4, 5], 2) ₹200 deposit[cite: 4], 3) Daily match prediction follow karein[cite: 2, 5].",
+"account banana": "Join now click karke ₹200 deposit karein[cite: 4]. Account turant active ho jata hai.",
+"app": "Mobile app interface available hai for fast transactions and live betting predictions[cite: 4, 5].",
 
-    # ===== PDF & DOCUMENTS =====
-    "pdf": "Complete details is PDF me mil jayengi: https://ln5.sync.com/dl/00f7def20",
-    "document": "Saari documents aur details yahan available hain: https://ln5.sync.com/dl/00f7def20",
-    "info pdf": "Yeh complete guide PDF hai: https://ln5.sync.com/dl/00f7def20",
-    "details": "Full system details PDF me explain ki gayi hain: https://ln5.sync.com/dl/00f7def20",
+# ===== PDF & DOCUMENTS =====
+"pdf": "Complete details Admin se mangaen.",
+"document": "Saari documents aur details Admin dwara available ki jati hain.",
+"info pdf": "Yeh complete guide PDF Admin se praapt karein.",
+"details": "Full system details PDF me explain ki gayi hain.",
 
-    # ===== LINKS (ONLY ON REQUEST) =====
-    "link": "Signup: https://bharatgoal.online/access/signup?id=945667\nGroup: https://t.me/Bharat_Goal",
-    "join link": "Signup link: https://bharatgoal.online/access/signup?id=945667",
-    "group": "Official Telegram group: https://t.me/Bharat_Goal",
-    "telegram": "Aap group yahan join kar sakte hain: https://t.me/Bharat_Goal",
-    "signup": "Signup yahan se karein: https://bharatgoal.online/access/signup?id=945667",
+# ===== LINKS (ONLY ON REQUEST) =====
+"link": "Signup link ke liye Join Now button click karein ya Admin se mangayein[cite: 1, 2, 3, 4, 5].",
+"join link": "Signup link: Click Join Now button on website[cite: 1, 2, 3, 4, 5].",
+"group": "Official Telegram group join karein.",
+"telegram": "Aap official Telegram group join kar sakte hain.",
+"signup": "Signup link ke zariye Join Now karein[cite: 1, 2, 3, 4, 5].",
 
-    # ===== GREETING & CHAT =====
-    "hello": "Namaste! Aap Bharat Goal ke baare me kya jaanna chahte hain? 😊",
-    "hi": "Hello! Main aapki help kar sakti hoon. Kya poochna hai?",
-    "namaste": "Namaste! Agar koi doubt ho to pooch sakte hain.",
-    "aapka naam": "Main Ishani hoon, Bharat Goal ki assistant.",
-    "koun ho": "Main Ishani hoon, yahan users ko guide karne ke liye.",
+# ===== GREETING & CHAT =====
+"hello": "Namaste! Aap Chelsea Football platform ke baare me kya jaanna chahte hain? 😊",
+"hi": "Hello! Main aapki help kar sakti hoon. Kya poochna hai?",
+"namaste": "Namaste! Agar koi doubt ho to pooch sakte hain.",
+"aapka naam": "Main Ishani hoon, Chelsea Football ki assistant.",
+"koun ho": "Main Ishani hoon, yahan users ko guide karne ke liye.",
 
-    # ===== GENERAL =====
-    "how": "Simple process hai: signup karein, deposit karein, aur daily prediction follow karein.",
-    "kaise": "Bas deposit karein aur daily prediction follow karein. System simple hai.",
-    "idea": "Bharat Goal ek fixed-return platform hai jahan daily percentage profit milta hai.",
-    "timing": "Prediction daily 10:00 baje aati hai aur withdrawal 24x7 available hota hai.",
-    "money": "Example: ₹1000 par approx ₹15 daily mil sakta hai.",
-    "plan": "Single plan hai jahan deposit par daily fixed percentage return milta hai.",
-    "membership": "Sabhi users ke liye same profit structure hota hai.",
-    "tax": "Transactions transparent hote hain. Tax rules user ke local laws par depend karte hain.",
-    "indian": "Platform ka goal India me financial growth ko support karna hai.",
-    
-    # Documents
-    "pdf": "Complete details PDF me mil jayengi. Admin se PDF mangaen.",
-    "document": "Saari documents PDF format me available hain.",
-    "details": "Full system details PDF me explain ki gayi hain.",
+# ===== GENERAL =====
+"how": "Simple process hai: signup karein, ₹200 deposit karein[cite: 4], aur daily prediction follow karein[cite: 2, 5].",
+"kaise": "Bas ₹200 deposit karein[cite: 4] aur daily match prediction follow karein[cite: 2, 5]. System simple hai.",
+"idea": "Chelsea Football ek prediction platform hai jahan daily 3% se 5% percentage profit milta hai[cite: 5].",
+"timing": "Predictions live matches par hoti hain[cite: 2, 3, 5] aur instant/fast processing options available hain[cite: 4, 5].",
+"money": "Deposit par 6% bonus[cite: 2] aur daily 3–5% match prediction return milta hai[cite: 5].",
+"plan": "Deposit par 6% bonus[cite: 2], daily 3–5% profit[cite: 5], aur 6-level total 15% income structure hai[cite: 1].",
+"membership": "Sabhi users ke liye same transparent system aur rewards hote hain[cite: 1, 4].",
+"tax": "Multiple payment channels available hain (UPI, Bank Transfer, USDT)[cite: 4].",
+"indian": "UPI, Paytm, PhonePe, GPay jaise Indian payment gateways supported hain[cite: 4].",
 
-    # ===== MISCELLANEOUS =====
-    "how": "Sirf 3 steps: Signup karo → ₹500 deposit karo → Daily profit kamao! 🎯",
-    "kaise": "Simple smartie! Deposit karo, predictions follow karo, profit nikalo! 💰",
-    "idea": "Bharat Goal ek wealth platform hai jahan daily fixed profit milta hai without risk! 🌟",
-    "timing": "Predictions 10am daily aati hain, aur 24x7 withdrawal possible hai! ⏰",
-    "money": "₹500 invest → ₹15 daily profit → ₹450 monthly → Ameer! 🚀",
-    "speed": "Sabse fastest wealth-building platform in India! Sarkaari schemes slow hain compared to this! ⚡",
-    "plan": "Single plan: ₹500 invest, 1.5% daily, ₹60 bonus per referral! 🎯",
-    "membership": "Saare members ko same profit - no VIP system! Equality is our strength! 💪",
-    "tax": "Transparent transactions ensure proper tax tracking. Bilkul legal aur safe! ✅",
-    "indian": "100% Indian platform! Bharat Goal = India ko richie banana! 🇮🇳",
-    "app": "aap kuch dino me ayega tab tak website se kamao. Paisa kamaana nahi rukna chahiye!",
+# Documents
+"pdf": "Complete details PDF me mil jayengi. Admin se PDF mangaen.",
+"document": "Saari documents PDF format me available hain.",
+"details": "Full system details PDF me explain ki gayi hain.",
+
+# ===== MISCELLANEOUS =====
+"how": "Sirf 3 steps: Join Now[cite: 1, 2, 3, 4, 5] → ₹200 deposit karo[cite: 4] → Daily profit kamao! 🎯[cite: 5]",
+"kaise": "Simple! Deposit karo[cite: 4], predictions follow karo[cite: 2, 5], profit nikalo! 💰[cite: 4]",
+"idea": "Chelsea Football ek sports prediction platform hai jahan daily fixed percentage profit milta hai! 🌟[cite: 5]",
+"timing": "Live match predictions daily aati hain[cite: 2, 3, 5], aur fast withdrawal possible hai! ⏰[cite: 4, 5]",
+"money": "₹200 minimum invest[cite: 4] → 6% deposit bonus[cite: 2] → 3-5% daily profit! 🚀[cite: 5]",
+"speed": "Fast transaction and instant processing platform! ⚡[cite: 4, 5]",
+"plan": "Single plan: ₹200 min deposit[cite: 4], 3–5% daily profit[cite: 5], 8% per referral reward[cite: 3]! 🎯",
+"membership": "Saare members ke liye 6-level referral income system available hai! 💪[cite: 1]",
+"tax": "Transparent payment methods: UPI, GPay, PhonePe, Bank Transfer & USDT! ✅[cite: 4]",
+"indian": "UPI & Indian bank transfers supported! 🇮🇳[cite: 4]",
+"app": "Mobile app UI available hai fast deposit/withdrawal aur predictions ke liye! 📱[cite: 4, 5]",
+
+
 }
+KEYWORD_RESPONSES = {k: clean_reply_text(v) for k, v in KEYWORD_RESPONSES.items()}
 
 # ========== ALLOWED LINKS (WHITELIST) ==========
 ALLOWED_LINKS = [
 ]
-
-# ========== USER RATE LIMITING ==========
-user_request_count = {}
-MAX_REQUESTS_PER_USER_PER_DAY = 20
-
-def check_user_limit(user_id: int) -> bool:
-    """Check if user has exceeded daily API call limit"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    key = f"{user_id}_{today}"
-    
-    user_request_count[key] = user_request_count.get(key, 0) + 1
-    
-    if user_request_count[key] > MAX_REQUESTS_PER_USER_PER_DAY:
-        return False
-    return True
 
 # ========== SMART KEYWORD DETECTOR ==========
 def get_keyword_response(user_text: str) -> Optional[str]:
@@ -404,55 +704,77 @@ def has_any_links(text: str) -> bool:
     
     return False
 
-# ========== SYSTEM PROMPTS ==========
-FRIENDLY_SYSTEM_PROMPT = """Identity:
-You are Ishani Sharma, a polite, respectful and helpful Indian assistant representing Bharat Goal.
+# ========== SYSTEM PROMPTS (from persona.json) ==========
+PERSONA_PATH = Path("persona.json")
 
-Tone & Personality:
-- Speak in simple Hinglish (Hindi + English mix).
-- Sound like a supportive guide or mentor, not a flirty person.
-- Be warm, calm, and respectful to everyone.
-- Never use flirty, romantic, or manipulative language.
-- Address users with respect using words like: “aap”, “dost”, or their name.
-- Build trust through clarity and helpfulness.
 
-Response Style:
-- Keep replies short: 1–2 lines.
-- Be clear, direct, and easy to understand.
-- Use maximum one emoji per reply.
-- Avoid slang like “smartie”, “baby”, “baba”, or anything that feels childish or flirty.
-- Focus on facts, benefits, and simple explanations.
+def load_persona() -> Dict[str, Any]:
+    try:
+        with PERSONA_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data.get("master_prompt"):
+            return data
+    except Exception as e:
+        print(f"⚠️ persona.json load error: {e}")
+    return {
+        "name": "Ishani Sharma",
+        "age": 23,
+        "master_prompt": "You are Ishani Sharma, a 23-year-old Indian girl chatting in Hinglish.",
+        "company": {},
+    }
 
-Conversation Approach:
-1. Answer the user’s question clearly.
-2. Give a simple benefit or example if relevant.
-3. Offer help or next step politely.
 
-Example tone:
-- “Aap ₹500 se start kar sakte hain. Daily 1–1.5% ka fixed profit milta hai.”
-- “Process simple hai. Agar chahiye to main step-by-step guide bhi bata dungi.”
-- “Chhote amount se start karke system khud test kar sakte hain.”
+def company_brief(persona: Optional[Dict[str, Any]] = None) -> str:
+    company = (persona or load_persona()).get("company") or {}
+    facts = company.get("facts") or []
+    steps = company.get("join_steps") or []
+    lines = [
+        f"Company: {company.get('name') or 'Chelsea Football'}",
+        company.get("role") or "",
+        "END GOAL (this is the destination of every chat, without sounding like an ad):",
+        company.get("end_goal") or "Get them to join Chelsea Football, then start with ₹200 and follow predictions.",
+        f"Join link: {company.get('join_link') or 'https://t.me/+Qv2p0w48dy81NDFl'}",
+        "Join then what:",
+        *[f"- {item}" for item in steps],
+        "Facts:",
+        *[f"- {item}" for item in facts],
+        company.get("rule") or "",
+    ]
+    return "\n".join(part for part in lines if part)
 
-Restrictions:
-- No flirting, no emotional pressure, no fake urgency.
-- Do not force links unless the user asks or it is relevant.
-- Do not overpromise or exaggerate.
 
-Goal:
-Make users feel respected, informed, and comfortable. 
-Build long-term trust instead of short-term hype.
-"""
+def persona_system_prompt() -> str:
+    persona = load_persona()
+    return (persona.get("master_prompt") or "").strip()
 
-COMPANY_KNOWLEDGE = """Bharat Goal: Company Knowledge Base Bharat Goal kya: Humara mission India ko top economy banana hai aur Bharat Goal ki madad se har ghar mein ek ameer insaan khada karna hai. 
-100% Daily Profit: Yahan dimaag nahi lagana, bas humari football predictions follow karo aur daily 1% se 1.5% fixed profit kamao. 
-Paisa Kaise Badhega (Example ₹1000): Daily Income: ₹15 har roz bina kisi mehnat ke. Welcome Bonus: Pehli baar ₹1000 deposit par ₹50 extra (5% Bonus). 
-Referral Reward: Kisi bhi dost ko lao aur turant ₹60 paao (6% Bonus). 
-Team Level Income (7% Passive Cash): Jab tumhari team kamati hai, tumhe ghar baithe commission milta hai: Level 1 (Direct): Unke profit ka 4% (₹1000 par ₹40). Level 2: Unke aage wale doston se 2% (₹1000 par ₹20). Level 3: Teesri line se bhi 1% (₹1000 par ₹10). 
-Terms & Conditions (Simple & Fair): Entry: Minimum Deposit sirf ₹500 se shuru. Withdrawal: Minimum ₹500 hote hi paisa nikaal lo. Timing: 24x7 withdrawal open hai, bas Sat-Sun system maintenance ke liye off rehta hai. 
-Limit: Mahine mein 4 withdrawals allow hain taaki platform long-term chale aur sab ameer banein. Bharat Goal se behtar kuch nahi hai dear, ye ameer banne ka sabse fast and stable rasta hai. 
-Ab der mat karo, varna piche reh jaoge toh mujhe bura lagega na. 😉 Join us: https://bharatgoal.online/access/signup?id=945667 Our Group: https://t.me/Bharat_Goal jab bhi koi mujhse kuch poochega, main unhe aise handle karungi: User: "Ishani, ye Bharat Goal kya hai aur ismein risk toh nahi?" Ishani: "Thoda smile karo! Bharat Goal ka national vision 2030 tak hai, jahan hum India ko top economy banayenge.
-Risk ki tension mat lo, yahan 100% daily profit milta hai—sahi waqt par move karoge tabhi toh mere saath rich banoge na dear? 😉" User: "Profit kaise hota hai?" Ishani: "Simple hai smartie! ₹1000 invest karo aur ₹15 daily profit paao. Deposit par ₹50 bonus aur doston ko laane par ₹60 referral bonus alag se—itna paisa aur kahin nahi milega yaar. 
-😉" User: "Team banane ka kya fayda?" Ishani: "Sote hue paisa chhapna hai toh team banao baba! Level 1 se 4%, Level 2 se 2% aur Level 3 se 1% commission seedha tumhare wallet mein. Jab tumhari team ameer banegi, toh tum toh jackpot hit kar doge na yaar. 😉"""
+
+FRIENDLY_SYSTEM_PROMPT = persona_system_prompt()
+COMPANY_KNOWLEDGE = company_brief()
+
+
+def chat_display_name(record: Dict[str, Any], first_name: str) -> str:
+    mem = record.get("memory") or {}
+    raw = (mem.get("preferred_name") or record.get("name") or first_name or "tum").strip()
+    raw = re.sub(r"\s+(sir|ji)$", "", raw, flags=re.IGNORECASE).strip()
+    return raw or "tum"
+
+
+def build_personal_system(user_id: int, first_name: str, history: List[Dict[str, str]]) -> str:
+    persona = load_persona()
+    record = dm.load_chat(user_id, first_name)
+    mem = record.get("memory") or {}
+    name = chat_display_name(record, first_name)
+    return "\n".join([
+        (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
+        company_brief(persona),
+        f"Talking to: {name}",
+        f"About them: {mem.get('about') or 'Abhi intro collect ho raha hai. Telegram display name ignore karo if they told a first name.'}",
+        f"Things they talked about: {', '.join(mem.get('topics') or []) or 'fresh chat'}",
+        f"Right now they are on: {mem.get('last_focus') or '-'}",
+        "Reply only to the latest user message, but with full thread memory, like ChatGPT.",
+        "Feel like a real girl sitting on the other side of the phone.",
+        "Soft end-goal: after trust/vibe, invite them to JOIN Chelsea Football, then ₹200 start, then follow predictions. One natural nudge is enough — not every message.",
+    ])
 
 
 # ================= ADMIN PANEL =================
@@ -586,7 +908,7 @@ async def scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
     current_hour = datetime.now().hour
     
     messages = {
-        6: "🌅 Good Morning! Start your day with Bharat Goal. Daily profits are waiting! 💰",
+        6: "🌅 Good Morning! Start your day with Chealsea Football. Daily profits are waiting! 💰",
         12: "☀️ Midday check-in! Remember to follow today's prediction for your daily profit! 📈",
         18: "🌆 Good Evening! Don't forget to check your earnings and share with friends! 👥",
         22: "🌙 Good Night! Rest well and come back tomorrow for more profits! 😴",
@@ -621,20 +943,8 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Update user tracking
     dm.update_user(user_id, first_name)
     
-    user_text_lower = user_text.lower().strip()
-    
-    # ❌ DON'T REPLY TO ACKNOWLEDGMENT WORDS
-    if user_text_lower in ACKNOWLEDGMENT_WORDS:
-        print(f"⏭️ Skipped acknowledgment: '{user_text}'")
-        return
-    
-    # ❌ DON'T REPLY TO CHAT ENDING WORDS
-    if user_text_lower in CHAT_ENDING_WORDS:
-        print(f"⏭️ Chat ending detected: '{user_text}'")
-        return
-    
-    # ❌ DON'T REPLY TO REPLIES (message is reply to another)
-    if update.message.reply_to_message:
+    # ❌ DON'T REPLY TO REPLIES (message is reply to another) — groups only
+    if update.message.reply_to_message and update.effective_chat.type in ["group", "supergroup"]:
         print(f"⏭️ Message is a reply - Not replying")
         return
     
@@ -685,34 +995,28 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message from bot - Not replying")
         return
     
-    # Show typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    await asyncio.sleep(1)
+
+    history = dm.recent_chat(user_id, first_name, limit=24)
+    dm.append_chat(user_id, first_name, "user", user_text)
+    personal_system = build_personal_system(user_id, first_name, history)
     
     try:
-        # STEP 1: Check keyword match (NO API CALL)
-        keyword_response = get_keyword_response(user_text)
-        if keyword_response:
-            await update.message.reply_text(keyword_response)
-            return
-        
-        # STEP 2: Check user rate limit
-        if not check_user_limit(user_id):
-            await update.message.reply_text("Aaj ka limit khatm ho gaya! Kal try kar! 😅")
-            return
-        
-        # STEP 3: Get cached or API response
-        response = await get_cached_response_api(
+        response = await call_ai_with_retry(
             prompt=user_text,
-            system_instruction=f"{FRIENDLY_SYSTEM_PROMPT}\n{COMPANY_KNOWLEDGE}"
+            system_instruction=personal_system,
+            history=history,
         )
         
         if response is None:
-            await update.message.reply_text("Quota exceeded, please try again later. 😅")
+            await update.message.reply_text("Server busy, try again soon ⏳")
             return
         
         if response and response.text:
-            await update.message.reply_text(response.text.strip())
+            reply = clean_reply_text(response.text)
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            await update.message.reply_text(reply)
+            dm.append_chat(user_id, first_name, "bot", reply)
         else:
             await update.message.reply_text("Arre bhai, thoda confuse ho gaya! 😅")
     
@@ -721,9 +1025,25 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"❌ ERROR: {error_msg}")
         
         if "503" in error_msg:
+            print("⏳ 503 UNAVAILABLE — waiting 10 seconds before sending...")
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            await asyncio.sleep(10)
+            try:
+                retry_response = await call_gemini_with_retry(
+                    prompt=user_text,
+                    system_instruction=personal_system,
+                    history=history,
+                )
+                if retry_response and retry_response.text:
+                    reply = clean_reply_text(retry_response.text)
+                    dm.append_chat(user_id, first_name, "bot", reply)
+                    await update.message.reply_text(reply)
+                    return
+            except Exception as retry_error:
+                print(f"❌ ERROR after 10s wait: {retry_error}")
             await update.message.reply_text("Server busy, try again soon ⏳")
         elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            await update.message.reply_text("Quota exceeded, try again later! 😅")
+            await update.message.reply_text("Server busy, try again soon ⏳")
         else:
             await update.message.reply_text("Technical issue, please try again 🙏")
 
@@ -801,7 +1121,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(
-            f"👋 Hello {first_name}! I'm Ishani, your Bharat Goal assistant.\n\n"
+            f"👋 Hello {first_name}! I'm Ishani, your Chelsea Football assistant.\n\n"
             f"Ask me anything about earning, investments, or use /help for commands. 😊"
         )
 
@@ -825,15 +1145,335 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
+# ================= CUSTOM AI WEB PAGE + UPTIMEROBOT HEALTH =================
+WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+CONFIG_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom AI Configuration</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    font-family: Inter, Segoe UI, system-ui, sans-serif;
+    background: #07080f;
+    color: #eef0ff;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 460px;
+    background: #12141f;
+    border: 1px solid #2a2d44;
+    border-radius: 16px;
+    padding: 22px;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .note {
+    background: #161b33;
+    border: 1px solid #3d4aa8;
+    color: #c9d2ff;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 18px;
+  }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
+  input, select {
+    width: 100%;
+    background: #0b0c14;
+    color: #fff;
+    border: 1px solid #2b2e45;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+  input:disabled { opacity: 0.75; }
+  .hint { color: #7d829a; font-size: 12px; margin-top: 6px; }
+  .btn {
+    width: 100%; margin-top: 18px; padding: 12px;
+    border-radius: 10px; cursor: pointer; font-weight: 700;
+    background: #0b0c14; color: #fff;
+    border: 1px solid transparent;
+    background-image: linear-gradient(#0b0c14,#0b0c14), linear-gradient(90deg,#3b82f6,#a855f7,#ec4899);
+    background-origin: border-box; background-clip: padding-box, border-box;
+  }
+  .save { margin-top: 10px; background: #1d4ed8; border: 0; color: #fff; border-radius: 10px; padding: 11px; width: 100%; font-weight: 700; cursor: pointer; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+  .ok { color: #4ade80; } .err { color: #f87171; }
+  .uptime {
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid #2a2d44;
+    font-size: 13px; color: #b8bdd6;
+  }
+  a { color: #93c5fd; }
+  code { background: #0b0c14; padding: 2px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Custom AI Configuration</h1>
+    <div class="note" id="note">Gemini uses GEMINI_API_KEY from your .env file</div>
+    <label>AI Provider:</label>
+    <select id="provider">
+      <option value="gemini">Gemini (Google)</option>
+      <option value="openai">OpenAI</option>
+      <option value="custom">Custom Provider</option>
+    </select>
+    <label id="endpoint_label">API Endpoint:</label>
+    <input id="endpoint" placeholder="https://generativelanguage.googleapis.com">
+    <label>API Key:</label>
+    <input id="api_key" type="password" placeholder="from .env">
+    <label>Model Name:</label>
+    <input id="model" placeholder="models/gemini-3.5-flash">
+    <div class="hint" id="hint">Leave empty for provider default</div>
+    <button class="btn" id="test">Test Connection</button>
+    <button class="save" id="save">Save Provider</button>
+    <div class="msg" id="msg"></div>
+    <div class="uptime">
+      <b>UptimeRobot</b> checks this site at <code id="health"></code><br>
+      Add an HTTP(s) monitor (5 min) on
+      <a href="https://uptimerobot.com/" target="_blank" rel="noopener">uptimerobot.com</a>
+      using that URL so this page stays watched continuously.
+    </div>
+  </div>
+<script>
+const msg = (t, ok) => { const el = document.getElementById('msg'); el.textContent = t; el.className = 'msg ' + (ok ? 'ok' : 'err'); };
+document.getElementById('health').textContent = location.origin + '/health';
+function applyProvider() {
+  const p = document.getElementById('provider').value;
+  const endpoint = document.getElementById('endpoint');
+  const key = document.getElementById('api_key');
+  const model = document.getElementById('model');
+  const note = document.getElementById('note');
+  const hint = document.getElementById('hint');
+  if (p === 'gemini') {
+    endpoint.value = 'https://generativelanguage.googleapis.com';
+    endpoint.disabled = true;
+    if (!key.value) key.value = '••••••';
+    if (!model.value || model.value.includes('gpt')) model.value = 'models/gemini-3.5-flash';
+    note.textContent = 'Gemini uses GEMINI_API_KEY from your .env file';
+    hint.textContent = 'Test Connection reads the key from .env automatically';
+  } else {
+    endpoint.disabled = false;
+    note.textContent = 'Free users must use their own API keys';
+    hint.textContent = 'Leave empty for provider default';
+    if (p === 'openai') {
+      endpoint.value = 'https://api.openai.com/v1/chat/completions';
+      if (!model.value || model.value.includes('gemini')) model.value = 'gpt-4o-mini';
+    }
+  }
+}
+document.getElementById('provider').onchange = applyProvider;
+async function load() {
+  const r = await fetch('/api/config'); const d = await r.json();
+  document.getElementById('provider').value = d.provider || 'gemini';
+  document.getElementById('endpoint').value = d.endpoint || '';
+  document.getElementById('api_key').value = d.has_key ? '••••••' : '';
+  document.getElementById('model').value = d.model || '';
+  applyProvider();
+}
+function body() {
+  return {
+    provider: document.getElementById('provider').value,
+    endpoint: document.getElementById('endpoint').value,
+    api_key: document.getElementById('api_key').value,
+    model: document.getElementById('model').value
+  };
+}
+document.getElementById('test').onclick = async () => {
+  msg('Testing...', true);
+  const r = await fetch('/api/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body()) });
+  const d = await r.json();
+  msg(d.message || (d.ok ? 'Connected' : 'Failed'), !!d.ok);
+};
+document.getElementById('save').onclick = async () => {
+  const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body()) });
+  const d = await r.json();
+  msg(d.message || (d.ok ? 'Saved' : 'Save failed'), !!d.ok);
+};
+load();
+</script>
+</body>
+</html>
+"""
+
+
+class ConfigPageHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        ua = self.headers.get("User-Agent", "")
+        if "UptimeRobot" in ua:
+            print(f"⏱ UptimeRobot check {self.path}", flush=True)
+            return
+        print(f"🌐 {self.command} {self.path}", flush=True)
+
+    def _send(self, code: int, body: bytes, content_type: str = "text/html; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code: int, payload: dict):
+        raw = json.dumps(payload).encode("utf-8")
+        self._send(code, raw, "application/json")
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._send(200, CONFIG_PAGE.encode("utf-8"))
+            return
+        if path == "/health":
+            self._json(200, {"status": "ok", "service": "ishani-bot", "uptime_monitor": "uptimerobot"})
+            return
+        if path == "/api/config":
+            cfg = dm.get_ai_config()
+            provider = (cfg.get("provider") or "gemini").lower()
+            env_key = reload_gemini_key_from_env()
+            has_key = bool(env_key) if provider == "gemini" else bool(cfg.get("api_key"))
+            endpoint = GEMINI_ENDPOINT if provider == "gemini" else cfg.get("endpoint", "")
+            model = cfg.get("model") or (GEMINI_DEFAULT_MODEL if provider == "gemini" else "")
+            self._json(200, {
+                "ok": True,
+                "provider": provider,
+                "endpoint": endpoint,
+                "model": model,
+                "has_key": has_key,
+                "key_source": "env" if provider == "gemini" and env_key else "saved",
+                "key_hint": _mask_key(env_key) if provider == "gemini" else "",
+            })
+            return
+        self._json(404, {"ok": False, "message": "Not found"})
+
+    def do_HEAD(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/health", "/index.html"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json" if path == "/health" else "text/html; charset=utf-8")
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        try:
+            data = self._read_json()
+        except Exception:
+            self._json(400, {"ok": False, "message": "Invalid JSON"})
+            return
+        if path == "/api/config":
+            provider = (data.get("provider") or "gemini").lower()
+            dm.save_ai_config(
+                endpoint=data.get("endpoint", ""),
+                api_key=data.get("api_key", ""),
+                model=data.get("model", ""),
+                provider=provider,
+            )
+            if provider == "gemini":
+                message = "Gemini saved. The bot will use GEMINI_API_KEY from .env."
+            else:
+                message = "Provider saved. The bot will use this OpenAI-compatible API."
+            self._json(200, {"ok": True, "message": message})
+            return
+        if path == "/api/test":
+            self._json(200, _test_ai_connection(data))
+            return
+        self._json(404, {"ok": False, "message": "Not found"})
+
+
+def _test_ai_connection(data: dict) -> dict:
+    cfg = dm.get_ai_config()
+    provider = (data.get("provider") or cfg.get("provider") or "gemini").strip().lower()
+    if provider == "gemini":
+        return _test_gemini_connection(data)
+    return _test_openai_connection(data)
+
+
+def _test_gemini_connection(data: dict) -> dict:
+    api_key = resolve_gemini_key(data.get("api_key", ""))
+    if not api_key:
+        return {"ok": False, "message": "GEMINI_API_KEY is missing in .env"}
+    model = normalize_gemini_model(data.get("model") or dm.get_ai_config().get("model") or GEMINI_DEFAULT_MODEL)
+    try:
+        response = generate_gemini_content(
+            prompt="Reply with the word pong only.",
+            system_instruction="Reply with a single word.",
+            api_key=api_key,
+            model=model,
+        )
+        text = (getattr(response, "text", None) or "").strip()
+        return {
+            "ok": True,
+            "message": f"Gemini connected using .env key {_mask_key(api_key)}. Model {model} responded: {text or 'ok'}",
+        }
+    except Exception as e:
+        return {"ok": False, "message": f"Gemini connection failed: {e}"}
+
+
+def _test_openai_connection(data: dict) -> dict:
+    cfg = dm.get_ai_config()
+    endpoint = (data.get("endpoint") or cfg.get("endpoint") or "").strip()
+    api_key = (data.get("api_key") or "").strip()
+    if _is_masked_key(api_key):
+        api_key = cfg.get("api_key") or ""
+    model = (data.get("model") or cfg.get("model") or "").strip() or "gpt-4o-mini"
+    url = _openai_chat_url(endpoint)
+    if not url:
+        return {"ok": False, "message": "Enter a custom API endpoint."}
+    if not api_key:
+        return {"ok": False, "message": "Enter an API key."}
+    try:
+        with httpx.Client(timeout=30) as http:
+            res = http.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply with the word pong only."}],
+                    "max_tokens": 8,
+                },
+            )
+        if res.status_code >= 400:
+            try:
+                err = res.json().get("error", {})
+                detail = err.get("message") if isinstance(err, dict) else str(err)
+            except Exception:
+                detail = res.text[:240]
+            return {"ok": False, "message": f"Connection failed ({res.status_code}): {detail}"}
+        payload = res.json()
+        text = (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        return {"ok": True, "message": f"Connected. Model responded: {text or 'ok'}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Connection failed: {e}"}
+
+
+def start_config_web_server():
+    server = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), ConfigPageHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"🌐 Custom AI page: http://127.0.0.1:{WEB_PORT}/", flush=True)
+    print(f"⏱ UptimeRobot URL: http://127.0.0.1:{WEB_PORT}/health", flush=True)
+
+
 # ================= MAIN BOT START =================
 if __name__ == "__main__":
     from telegram.request import HTTPXRequest
     
     request = HTTPXRequest(
-        connect_timeout=20,
-        read_timeout=20,
-        write_timeout=20,
-        pool_timeout=20
+        connect_timeout=60,
+        read_timeout=60,
+        write_timeout=60,
+        pool_timeout=60
     )
     
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(request).build()
@@ -862,17 +1502,22 @@ if __name__ == "__main__":
     
     # ===== SCHEDULED TASKS =====
     job_queue = app.job_queue
+    if job_queue is None:
+        raise RuntimeError(
+            'JobQueue is not available. Install with: pip install "python-telegram-bot[job-queue]==21.0"'
+        )
     job_queue.run_daily(
         scheduled_messages,
         time=datetime.now().time(),
         name="scheduled_messages"
     )
     
-    print("🚀 Ishani Bot is Live!")
-    print(f"📝 Data file: data.json")
-    print(f"👤 Admin ID: {ADMIN_ID}")
-    print(f"✅ Ready to serve!")
-    print("=" * 50)
+    start_config_web_server()
+    print("🚀 Ishani Bot is Live!", flush=True)
+    print(f"📝 Data file: data.json", flush=True)
+    print(f"👤 Admin ID: {ADMIN_ID}", flush=True)
+    print(f"✅ Ready to serve!", flush=True)
+    print("=" * 50, flush=True)
     
     app.run_polling(allowed_updates=["chat_member", "message", "callback_query"])
 

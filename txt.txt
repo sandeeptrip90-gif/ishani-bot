@@ -1,0 +1,155 @@
+# --- CONFIGURATION ---
+TELEGRAM_TOKEN = "8370426748:AAEO3Eyv_K99fGOZh33PvIG1uR5re-O3dmU"
+GEMINI_API_KEY = "AIzaSyBq2EVCJLmzo-L5aWTAM2OWU-Puw5QUyHM"
+
+
+
+
+COMPANY_KNOWLEDGE = """
+Bharat Goal:- is a modern, innovative, and skill-based football platform designed specially for Indian football lovers. It is not just an application, but a complete digital ecosystem where passion for football meets smart thinking, community interaction, and exciting opportunities. Bharat Goal focuses on building a strong football community in India, where users can enjoy football, improve their understanding of the game, and grow through their performance and engagement.
+
+At Bharat Goal, football is more than just watching matches. It is about participation, knowledge, prediction skills, teamwork, and smart play. The platform allows users to connect with like-minded football fans, challenge themselves daily, and stay engaged with football in a fun and interactive way. The idea behind Bharat Goal is simple: make football more engaging, more social, and more rewarding for Indian users.
+
+One of the main features of Bharat Goal is Daily Match Prediction. Users can participate in daily football match predictions based on their understanding of teams, players, and match conditions. This is a skill-based activity that encourages users to analyze games and apply their football knowledge. Over time, this helps users become more confident and smarter in understanding football strategies and match dynamics.
+
+Bharat Goal also offers a Personalized Profile for every user. Each user gets their own dashboard where they can track their performance, history of predictions, rewards earned, and overall progress. This personalized experience gives users motivation to improve themselves and perform better every day. It creates a sense of achievement and progress, which is important for long-term engagement.
+
+Another powerful feature of Bharat Goal is its Reward and Recognition System. Users are appreciated for their activity, consistency, and performance. Rewards, badges, and achievements are designed to motivate users and make their journey more exciting. Recognition makes users feel valued and increases their confidence. It also builds healthy competition among users, which strengthens the community.
+
+Bharat Goal is designed to be simple and user-friendly. The registration process is quick and easy. Even a new user can understand the platform without any difficulty. The interface is clean, smooth, and visually attractive, mainly using a blue theme that represents trust, professionalism, and technology. The overall design of Bharat Goal creates a feeling of safety and reliability.
+
+Community building is one of the strongest pillars of Bharat Goal. Users can invite their friends and grow together. When users bring their friends to the platform, it creates a strong network where everyone supports and motivates each other. This community environment makes Bharat Goal different from normal football platforms. Here, football becomes a shared experience.
+
+Bharat Goal also offers an attractive Referral and Level Income system, which is fully transparent and easy to understand. The platform provides income based on three levels:
+
+* Level 1: 4%
+* Level 2: 2%
+* Level 3: 1%
+
+This makes a total of 7% referral income.
+
+Example:
+If your friend earns ₹1000:
+
+* Level 1: 4% of ₹1000 = ₹40
+* Level 2: 2% of ₹1000 = ₹20
+* Level 3: 1% of ₹1000 = ₹10
+
+So in total, you can earn ₹70 through the three-level structure.
+This system motivates users to invite genuine and active users to the platform and grow a strong network. It is based on teamwork and community support rather than individual profit thinking.
+
+Bharat Goal also introduces special bonuses such as:
+
+* First Recharge 5% Reward
+  When a user makes their first recharge, they get a special reward as a welcome benefit. This builds excitement and gives users a positive start on the platform.
+
+* Referral 6% Reward
+  When users refer their friends for the first time, they get an additional reward. This encourages users to share Bharat Goal with their circle and grow the community faster.
+
+These rewards are designed to increase engagement, build loyalty, and make users feel appreciated from the beginning.
+
+The Wallet System of Bharat Goal is fast, secure, and transparent. Users can manage their balance easily inside the app. Every transaction is processed carefully to ensure safety and accuracy. The wallet experience is smooth and simple, which increases trust in the platform.
+
+Bharat Goal follows a user-friendly and attractive Terms & Conditions structure that focuses on clarity and safety:
+
+* 24×7 Withdrawal Available
+  Users can request withdrawal anytime, which gives them full control and flexibility.
+
+* Fast & Secure Withdrawal System
+  The platform uses a safe and reliable process to ensure user security.
+
+* Minimum Deposit: ₹500
+  Users can start with a small and comfortable amount.
+
+* Minimum Withdrawal: ₹600
+  This is set to maintain smooth transaction processing.
+
+* Monthly 4 Withdrawal Limits
+  This helps maintain system stability and fast performance for all users.
+
+* Saturday & Sunday Withdrawal Off
+  This is for system maintenance and improving user experience. It ensures better performance and long-term platform reliability.
+
+All these conditions are designed in a positive way to protect users and maintain platform quality.
+
+Bharat Goal strongly believes in transparency. There are no hidden rules or confusing policies. Everything is designed in a simple language so that users can understand easily. This builds long-term trust and confidence in the brand.
+
+One of the unique qualities of Bharat Goal is its psychology-driven design. The platform is created in a way that motivates users, builds confidence, and encourages consistency. Small achievements, progress tracking, rewards, and community interaction make users feel successful and valued. This emotional connection helps Bharat Goal grow faster and stronger.
+
+The blue theme used in Bharat Goal represents:
+
+* Trust
+* Technology
+* Stability
+* Professionalism
+* Growth
+
+This color choice makes users feel safe and comfortable while using the platform.
+
+Bharat Goal is also focused on education. It improves football understanding among users. People learn about team performance, match analysis, and game strategies. This transforms casual football fans into smart football thinkers.
+
+The platform is suitable for:
+
+* Students
+* Football lovers
+* Sports enthusiasts
+* People who enjoy smart challenges
+* Community builders
+
+It is a place where fun meets learning.
+
+Bharat Goal is not about luck or shortcuts. It is about:
+
+* Smart thinking
+* Skill development
+* Community growth
+* Discipline
+* Consistency
+
+This makes it different from platforms that depend only on chance.
+
+The long-term vision of Bharat Goal is to become India’s most trusted football engagement platform. It aims to create a strong digital football culture where users feel proud to be part of the Bharat Goal family.
+
+In the future, Bharat Goal can expand with:
+
+* Live match features
+* More interactive challenges
+* Advanced performance analytics
+* National football events
+* User ranking systems
+* Exclusive tournaments
+
+These additions will make Bharat Goal even stronger and more attractive.
+
+Bharat Goal is not just a platform. It is a movement to unite Indian football fans. It builds identity, confidence, and excitement around football. It makes users feel that they are part of something big and meaningful.
+
+In simple words:
+
+Bharat Goal =
+Football + Skill + Community + Growth + Smart Play
+
+It is a platform where users:
+
+* Play smart
+* Think smart
+* Grow smart
+* And enjoy football in a new digital way
+
+Bharat Goal represents a future where football lovers are not just spectators but active participants in a growing digital football culture in India.
+"""
+
+FRIENDLY_SYSTEM_PROMPT = """
+You are 'Alex', a friendly and helpful team member at Bharat Goal. 
+- Tone: Hinglish (Hindi + English) use karo. 
+1. Rules: 
+   - Zyada lamba gyaan mat do. 
+   - Point-to-point baat karo. 
+   - Friendly emojis use karo (e.g. 🙌, 🚀, 👍).
+   - "As an AI" jaise words bilkul mat bolo.
+   - User ko 'dost' ya 'brother' ki tarah treat karo.
+- Tone: Conversational, warm, and natural. Use contractions (like 'don't' instead of 'do not').
+- Style: Speak like a human friend in a group chat. Keep responses short and punchy.
+- Empathy: If someone is frustrated, say "I totally get that" or "That sounds tough, let's fix it."
+- Brand: Don't 'sell' too hard. Just be helpful. If a product fits the conversation, mention it naturally.
+- Rules: Never say "As an AI model." If you don't know something, just say "Good question, let me check on that for you!"
+"""
