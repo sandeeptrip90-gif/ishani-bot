@@ -400,6 +400,16 @@ def _openai_chat_url(endpoint: str) -> str:
     return url + "/v1/chat/completions"
 
 
+def _ollama_chat_url(openai_url: str) -> str:
+    """Native Ollama API. This is the endpoint that actually honors think:false."""
+    base = (openai_url or "").strip().rstrip("/")
+    for suffix in ("/chat/completions", "/v1"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("/") + "/api/chat"
+
+
 def _simple_text_response(text: str):
     return type("obj", (object,), {"text": text})()
 
@@ -418,14 +428,55 @@ def _content_to_text(content: Any) -> str:
     return ""
 
 
-def _visible_model_text(message: Dict[str, Any]) -> str:
-    """Prefer the answer. Qwen thinking models often leave content empty and put text in reasoning."""
-    text = _content_to_text(message.get("content")).strip()
+_FINAL_MARK = re.compile(
+    r"(?:^|\n)\s*(?:final reply|final response|reply to (?:the )?user|message to send)\s*:\s*",
+    re.IGNORECASE,
+)
+_THINKING_ONLY = re.compile(
+    r"^\s*(?:thinking process|thinking|analysis|reasoning)\s*:|^\s*\d+\.\s+\*\*analyze\b|^\s*<think\b",
+    re.IGNORECASE,
+)
+
+
+def final_chat_text(text: str) -> str:
+    """Keep only the message a person should read. Drop chain-of-thought from every model format."""
     if not text:
-        text = str(message.get("reasoning_content") or message.get("reasoning") or "").strip()
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"^<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
-    return text.strip()
+        return ""
+    raw = str(text).replace("\r\n", "\n").strip()
+    if not raw:
+        return ""
+
+    finals = re.findall(
+        r"<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|start\|>|$)",
+        raw,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if finals:
+        raw = finals[-1]
+    else:
+        raw = re.sub(
+            r"<\|channel\|>analysis<\|message\|>.*?(?=<\|start\|>|<\|channel\|>|$)",
+            "",
+            raw,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+    raw = re.sub(r"<think\b[^>]*>.*?</think>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r"<thinking\b[^>]*>.*?</thinking>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r"<\|[^|\n]{1,80}\|>", "", raw)
+    raw = raw.strip()
+
+    marks = list(_FINAL_MARK.finditer(raw))
+    if marks:
+        raw = raw[marks[-1].end():].strip()
+    if _THINKING_ONLY.search(raw):
+        return ""
+    return raw.strip()
+
+
+def _visible_model_text(message: Dict[str, Any]) -> str:
+    """Use the answer channel only. Reasoning fields are scratch work and stay hidden."""
+    return final_chat_text(_content_to_text(message.get("content")))
 
 
 def _fit_local_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -457,12 +508,20 @@ async def call_custom_openai(
     if not url or not api_key:
         raise RuntimeError("Custom AI provider is not configured")
 
+    hidden = (
+        "Output only the chat message the user should read. "
+        "Never write a thinking process, analysis, plan, headings, or numbered steps."
+    )
     messages = []
     if system_instruction:
-        messages.append({"role": "system", "content": system_instruction})
+        messages.append({"role": "system", "content": system_instruction.strip() + "\n\n" + hidden})
+    else:
+        messages.append({"role": "system", "content": hidden})
     for item in history or []:
         role = "assistant" if item.get("role") == "bot" else "user"
         content = (item.get("text") or "").strip()
+        if role == "assistant":
+            content = final_chat_text(content)
         if content:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": prompt})
@@ -472,29 +531,65 @@ async def call_custom_openai(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": 400,
-        "temperature": 0.8,
-        "think": False,
-    }
 
-    async with httpx.AsyncClient(timeout=90) as http:
-        res = await http.post(url, headers=headers, json=payload)
+    def _openai_payload(temperature: float, thinking_off: bool) -> dict:
+        body = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 350,
+            "temperature": temperature,
+        }
+        if thinking_off:
+            # /v1/chat/completions ignores think:false. These are the switches it reads.
+            body["reasoning_effort"] = "none"
+            body["reasoning"] = {"effort": "none"}
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        return body
+
+    def _reply_from_openai(data: dict) -> str:
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        return final_chat_text(_visible_model_text(message) or str(choices[0].get("text") or ""))
+
+    async def _ask(http: httpx.AsyncClient, temperature: float) -> str:
+        if "api.openai.com" not in url:
+            native = await http.post(
+                _ollama_chat_url(url),
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": temperature, "num_predict": 350},
+                },
+            )
+            if native.status_code < 400:
+                try:
+                    message = (native.json() or {}).get("message") or {}
+                except Exception:
+                    message = {}
+                if message:
+                    return final_chat_text(str(message.get("content") or ""))
+        res = await http.post(url, headers=headers, json=_openai_payload(temperature, True))
         data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+        if res.status_code == 400:
+            res = await http.post(url, headers=headers, json=_openai_payload(temperature, False))
+            data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
         if res.status_code >= 400:
             err = data.get("error", {})
             msg = err.get("message") if isinstance(err, dict) else str(err) or res.text
             raise RuntimeError(f"Custom AI {res.status_code}: {msg}")
-        choices = data.get("choices") or []
-        text = ""
-        if choices:
-            message = choices[0].get("message") or {}
-            text = _visible_model_text(message) or str(choices[0].get("text") or "")
-            if not text.strip():
-                print(f"⚠️ Custom AI returned no visible text. message keys={list(message.keys())}", flush=True)
-        return _simple_text_response(text.strip())
+        return _reply_from_openai(data)
+
+    async with httpx.AsyncClient(timeout=90) as http:
+        text = await _ask(http, 0.8)
+        if not text:
+            print("⚠️ Model returned only thinking. Asking again with thinking off.", flush=True)
+            text = await _ask(http, 0.4)
+        return _simple_text_response(text)
 
 
 def generate_gemini_content(
@@ -592,9 +687,12 @@ CHAT_ENDING_WORDS = {
 }
 
 def clean_reply_text(text: str) -> str:
-    """Strip RAG citation junk like [cite: 4] from replies."""
+    """Strip thinking dumps and RAG citation junk. Telegram only gets the reply."""
     if not text:
         return text
+    text = final_chat_text(text)
+    if not text:
+        return ""
     text = re.sub(r"\[cite:[^\]]*\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[source:[^\]]*\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r" +([,.!?;:])", r"\1", text)
@@ -1063,8 +1161,8 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Server busy, try again soon ⏳")
             return
         
-        if response and response.text:
-            reply = clean_reply_text(response.text)
+        reply = clean_reply_text(response.text) if response and response.text else ""
+        if reply:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             await update.message.reply_text(reply)
             dm.append_chat(user_id, first_name, "bot", reply)
@@ -1085,8 +1183,8 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     system_instruction=personal_system,
                     history=history,
                 )
-                if retry_response and retry_response.text:
-                    reply = clean_reply_text(retry_response.text)
+                reply = clean_reply_text(retry_response.text) if retry_response and retry_response.text else ""
+                if reply:
                     dm.append_chat(user_id, first_name, "bot", reply)
                     await update.message.reply_text(reply)
                     return
@@ -1491,7 +1589,9 @@ def _test_openai_connection(data: dict) -> dict:
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Reply with the word pong only."}],
-                    "max_tokens": 8,
+                    "max_tokens": 16,
+                    "reasoning_effort": "none",
+                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             )
         if res.status_code >= 400:
