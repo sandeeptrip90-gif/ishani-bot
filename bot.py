@@ -404,6 +404,47 @@ def _simple_text_response(text: str):
     return type("obj", (object,), {"text": text})()
 
 
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        bits = []
+        for part in content:
+            if isinstance(part, str):
+                bits.append(part)
+            elif isinstance(part, dict):
+                bits.append(str(part.get("text") or part.get("content") or ""))
+        return "\n".join(bits)
+    return ""
+
+
+def _visible_model_text(message: Dict[str, Any]) -> str:
+    """Prefer the answer. Qwen thinking models often leave content empty and put text in reasoning."""
+    text = _content_to_text(message.get("content")).strip()
+    if not text:
+        text = str(message.get("reasoning_content") or message.get("reasoning") or "").strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"^<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
+def _fit_local_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """qwen3.5 on an 8GB GPU uses a 4096 context and drops prompts past ~2050 tokens."""
+    system = []
+    rest = []
+    for item in messages:
+        if item.get("role") == "system":
+            content = item.get("content") or ""
+            if len(content) > 2800:
+                content = content[:2100].rstrip() + "\n...\n" + content[-500:]
+            system.append({"role": "system", "content": content})
+        else:
+            content = (item.get("content") or "").strip()
+            if content:
+                rest.append({"role": item.get("role") or "user", "content": content[:700]})
+    return system + rest[-6:]
+
+
 async def call_custom_openai(
     prompt: str,
     system_instruction: Optional[str] = None,
@@ -425,14 +466,21 @@ async def call_custom_openai(
         if content:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": prompt})
+    messages = _fit_local_messages(messages)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {"model": model, "messages": messages, "max_tokens": 220, "temperature": 0.8}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 400,
+        "temperature": 0.8,
+        "think": False,
+    }
 
-    async with httpx.AsyncClient(timeout=60) as http:
+    async with httpx.AsyncClient(timeout=90) as http:
         res = await http.post(url, headers=headers, json=payload)
         data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
         if res.status_code >= 400:
@@ -442,8 +490,11 @@ async def call_custom_openai(
         choices = data.get("choices") or []
         text = ""
         if choices:
-            text = (choices[0].get("message") or {}).get("content") or choices[0].get("text") or ""
-        return _simple_text_response(text or "")
+            message = choices[0].get("message") or {}
+            text = _visible_model_text(message) or str(choices[0].get("text") or "")
+            if not text.strip():
+                print(f"⚠️ Custom AI returned no visible text. message keys={list(message.keys())}", flush=True)
+        return _simple_text_response(text.strip())
 
 
 def generate_gemini_content(
@@ -1146,7 +1197,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 # ================= CUSTOM AI WEB PAGE + UPTIMEROBOT HEALTH =================
-WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+WEB_PORT = int(os.environ.get("WEB_PORT") or os.environ.get("PORT") or "8080")
 CONFIG_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1504,7 +1555,7 @@ if __name__ == "__main__":
     job_queue = app.job_queue
     if job_queue is None:
         raise RuntimeError(
-            'JobQueue is not available. Install with: pip install "python-telegram-bot[job-queue]==21.0"'
+            'JobQueue is not available. Install with: pip install "python-telegram-bot[job-queue]==22.5"'
         )
     job_queue.run_daily(
         scheduled_messages,
