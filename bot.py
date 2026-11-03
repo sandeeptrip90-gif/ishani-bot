@@ -38,6 +38,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
     CallbackQueryHandler,
+    ApplicationHandlerStop,
 )
 
 # ================= CONFIG =================
@@ -922,6 +923,8 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
         f"Right now they are on: {mem.get('last_focus') or '-'}",
         "Reply only to the latest user message, but with full thread memory, like ChatGPT.",
         "Feel like a real girl sitting on the other side of the phone.",
+        "Length: 1 or 2 short lines. Add a third line only when the user asked for steps or a list. No filler, no headings, no repeat of their message.",
+        "If the message is unclear, incomplete, or could mean two things, do not guess. Ask one short question to confirm what they mean.",
         "Soft end-goal: after trust/vibe, invite them to JOIN Chelsea Football, then ₹200 start, then follow predictions. One natural nudge is enough — not every message.",
     ])
 
@@ -1074,6 +1077,103 @@ async def scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"⚠️ Could not send scheduled message: {e}")
 
+# ================= GROUP MODERATION =================
+def _message_has_link(message) -> bool:
+    text = message.text or message.caption or ""
+    if has_any_links(text):
+        return True
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    return any(getattr(entity, "type", "") in ("url", "text_link") for entity in entities)
+
+
+def _message_has_inline_buttons(message) -> bool:
+    markup = message.reply_markup
+    return bool(markup and getattr(markup, "inline_keyboard", None))
+
+
+_ABUSE_OR_THREAT = re.compile(
+    r"("
+    r"\b(i will kill|i'll kill|kill you|murder you|rape you|beat you)\b|"
+    r"mar dunga|maar dunga|jaan se maar|goli mar|bomb maar|kat dunga|thappad marunga|"
+    r"madarchod|behenchod|bhosdik|chutiya|chutiye|gaandu|randi|harami|kameena|kamini|"
+    r"\b(fuck you|bastard|bitch|asshole|motherfucker)\b|"
+    r"\b(company|chelsea|user|bande|ladki|ladke|admin)\b.{0,24}\b(kutta|kutti|suar|bewakoof|nalayak|haramkhor)\b|"
+    r"\b(kutta|kutti|suar|bewakoof|nalayak|haramkhor)\b.{0,24}\b(company|chelsea|user|bande|ladki|ladke|admin)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _message_is_abuse_or_threat(message) -> bool:
+    """Gaali or a threat aimed at a person or a company. A complaint is not abuse."""
+    text = message.text or message.caption or ""
+    return bool(_ABUSE_OR_THREAT.search(text))
+
+
+async def _is_group_admin(chat, user_id: int) -> bool:
+    try:
+        member = await chat.get_member(user_id)
+    except Exception as e:
+        print(f"⚠️ Could not check member {user_id}: {e}", flush=True)
+        return False
+    return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+
+
+async def _delete_and_verify(message) -> bool:
+    """Delete a group message, then delete again. 'not found' on the second try means it is gone."""
+    try:
+        await message.delete()
+    except Exception as e:
+        err = str(e).lower()
+        if "not found" in err:
+            print(f"✅ Message {message.message_id} already gone", flush=True)
+            return True
+        print(f"⚠️ Could not delete message {message.message_id}: {e}", flush=True)
+        return False
+    try:
+        await message.delete()
+        print(f"⚠️ Message {message.message_id} still existed after the first delete", flush=True)
+        return False
+    except Exception as e:
+        gone = "not found" in str(e).lower()
+        print(
+            f"✅ Verified message {message.message_id} deleted" if gone else f"⚠️ Recheck failed for {message.message_id}: {e}",
+            flush=True,
+        )
+        return gone
+
+
+async def moderate_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove non-admin bots, links, and inline-button posts. Confirm the message is gone."""
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not message or not chat or not user or chat.type not in ("group", "supergroup"):
+        return
+    if user.id == context.bot.id:
+        return
+
+    is_admin = await _is_group_admin(chat, user.id)
+    if user.is_bot and not is_admin:
+        try:
+            await context.bot.ban_chat_member(chat.id, user.id)
+            print(f"🚫 Banned non-admin bot {user.id} from {chat.id}", flush=True)
+        except Exception as e:
+            print(f"⚠️ Could not ban bot {user.id}: {e}", flush=True)
+        await _delete_and_verify(message)
+        raise ApplicationHandlerStop
+
+    if is_admin:
+        return
+    if _message_is_abuse_or_threat(message):
+        print(f"🗑️ Deleted abuse or threat from {user.id}", flush=True)
+        await _delete_and_verify(message)
+        raise ApplicationHandlerStop
+    if _message_has_link(message) or _message_has_inline_buttons(message):
+        await _delete_and_verify(message)
+        raise ApplicationHandlerStop
+
+
 # ================= MESSAGE HANDLERS =================
 async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main message handler with improved logic"""
@@ -1097,42 +1197,11 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message is a reply - Not replying")
         return
     
-    # ========== LINK DELETION SYSTEM (GROUP ONLY) ==========
+    # Group links, inline buttons, and non-admin bots are removed in moderate_group.
     if update.effective_chat.type in ["group", "supergroup"]:
-        # Check user status (admin or not)
-        is_admin_or_creator = False
-        is_bot_message = update.message.from_user.is_bot
-        
-        # Skip link check for bot messages (allowed)
-        if not is_bot_message:
-            try:
-                user_member = await update.effective_chat.get_member(user_id)
-                if user_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
-                    is_admin_or_creator = True
-            except Exception as e:
-                print(f"⚠️ Could not check user status: {e}")
-                is_admin_or_creator = False
-        
-        # CHECK FOR LINKS: Delete if regular user (not admin/bot) has any link
-        has_links = has_any_links(user_text)
-        
-        if has_links and not is_admin_or_creator and not is_bot_message:
-            # DELETE THE MESSAGE
-            try:
-                await update.message.delete()
-                print(f"🗑️ Deleted message from user {user_id} containing links")
-                return
-            except Exception as e:
-                print(f"⚠️ Could not delete message: {e}")
-                return
-        
-        # Don't reply to admin/bot messages
-        if is_admin_or_creator:
-            print(f"⏭️ Message from group admin/creator - Not replying")
-            return
-        
-        if is_bot_message:
-            print(f"⏭️ Message from bot - Not replying")
+        is_admin_or_creator = await _is_group_admin(update.effective_chat, user_id)
+        if is_admin_or_creator or update.message.from_user.is_bot:
+            print("⏭️ Group admin or bot - Not replying", flush=True)
             return
     
     # For non-bot messages in groups
@@ -1642,6 +1711,10 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     
     # ===== MESSAGE HANDLERS =====
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
+        moderate_group,
+    ))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_document_upload))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
