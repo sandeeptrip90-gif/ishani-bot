@@ -465,6 +465,12 @@ def final_chat_text(text: str) -> str:
     raw = re.sub(r"<think\b[^>]*>.*?</think>", "", raw, flags=re.DOTALL | re.IGNORECASE)
     raw = re.sub(r"<thinking\b[^>]*>.*?</thinking>", "", raw, flags=re.DOTALL | re.IGNORECASE)
     raw = re.sub(r"<\|[^|\n]{1,80}\|>", "", raw)
+    raw = re.sub(r"(?<=[a-z])\.(?=[A-Z])", ".\n", raw)
+    raw = re.sub(
+        r"(?im)^.*\b(?:the user (?:says|said|wants|is asking)|they want to know|probably ask(?: for clarification)?|the assistant (?:should|means)|i should (?:ask|reply|respond)|my (?:reply|response) should)\b.*$",
+        "",
+        raw,
+    )
     raw = raw.strip()
 
     marks = list(_FINAL_MARK.finditer(raw))
@@ -510,8 +516,7 @@ async def call_custom_openai(
         raise RuntimeError("Custom AI provider is not configured")
 
     hidden = (
-        "Output only the chat message the user should read. "
-        "Never write a thinking process, analysis, plan, headings, or numbered steps."
+        "Send only the chat message. No thinking, no analysis, no 'The user says'."
     )
     messages = []
     if system_instruction:
@@ -909,18 +914,34 @@ def chat_display_name(record: Dict[str, Any], first_name: str) -> str:
     return raw or "tum"
 
 
-def build_personal_system(user_id: int, first_name: str, history: List[Dict[str, str]]) -> str:
+def build_personal_system(user_id: int, first_name: str, history: List[Dict[str, str]], compact: bool = False) -> str:
     persona = load_persona()
     record = dm.load_chat(user_id, first_name)
     mem = record.get("memory") or {}
     name = chat_display_name(record, first_name)
-    return "\n".join([
-        (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
-        company_brief(persona),
+    memory_lines = [
         f"Talking to: {name}",
         f"About them: {mem.get('about') or 'Abhi intro collect ho raha hai. Telegram display name ignore karo if they told a first name.'}",
         f"Things they talked about: {', '.join(mem.get('topics') or []) or 'fresh chat'}",
         f"Right now they are on: {mem.get('last_focus') or '-'}",
+    ]
+    if compact:
+        # Local models drop the long persona and then answer without the company facts.
+        return "\n".join([
+            "You are Ishani Sharma, 23, on Telegram. Talk in natural Hinglish, like a girl in the chat, not like an essay or a call-center script.",
+            "Read the whole thread, understand the latest message, then send only the reply. Never write your reasoning.",
+            "Never write lines such as 'The user says', 'They want to know', 'Probably ask', or 'The assistant should'.",
+            "Hello or hi: one short greeting and one short question. No extra lines.",
+            "If the message is unclear, ask one short Hinglish question. Do not list every possible meaning.",
+            "When they ask about Chelsea Football, joining, earning, deposit, withdrawal, referral, or the app, answer only from the company facts below. Do not invent numbers, links, or steps.",
+            "Teach one next step at a time, in simple lines, like to a beginner. Use a short numbered list and a few emojis only when they asked how to do something. Do not explain the whole company in one message.",
+            *memory_lines,
+            company_brief(persona),
+        ])
+    return "\n".join([
+        (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
+        company_brief(persona),
+        *memory_lines,
         "Reply only to the latest user message, but with full thread memory, like ChatGPT.",
         "Feel like a real girl sitting on the other side of the phone.",
         "Length: 1 or 2 short lines. Add a third line only when the user asked for steps or a list. No filler, no headings, no repeat of their message.",
@@ -1215,7 +1236,12 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     history = dm.recent_chat(user_id, first_name, limit=24)
     dm.append_chat(user_id, first_name, "user", user_text)
-    personal_system = build_personal_system(user_id, first_name, history)
+    personal_system = build_personal_system(
+        user_id,
+        first_name,
+        history,
+        compact=dm.uses_openai_compatible(),
+    )
     
     try:
         response = await call_ai_with_retry(
