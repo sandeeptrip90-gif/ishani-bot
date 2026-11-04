@@ -1197,12 +1197,10 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message is a reply - Not replying")
         return
     
-    # Group links, inline buttons, and non-admin bots are removed in moderate_group.
-    if update.effective_chat.type in ["group", "supergroup"]:
-        is_admin_or_creator = await _is_group_admin(update.effective_chat, user_id)
-        if is_admin_or_creator or update.message.from_user.is_bot:
-            print("⏭️ Group admin or bot - Not replying", flush=True)
-            return
+    # Other bots stay silent. People, including group admins, get a reply.
+    if update.message.from_user.is_bot:
+        print("⏭️ Group or private bot - Not replying", flush=True)
+        return
     
     # For non-bot messages in groups
     if not update.message.from_user.is_bot and update.effective_chat.type not in ["group", "supergroup"]:
@@ -1711,10 +1709,11 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     
     # ===== MESSAGE HANDLERS =====
+    # Run moderation first, then still allow the chat handler unless a message was removed.
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
         moderate_group,
-    ))
+    ), group=-1)
     app.add_handler(MessageHandler(filters.Document.PDF, handle_document_upload))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
