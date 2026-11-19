@@ -27,8 +27,7 @@ from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
-from google.genai import Client
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.constants import ChatAction, ChatMemberStatus
 from telegram.ext import (
     ApplicationBuilder,
@@ -44,13 +43,8 @@ from telegram.ext import (
 # ================= CONFIG =================
 load_dotenv()
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 
-# Gemini Client (key from .env)
-client = Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-GEMINI_DEFAULT_MODEL = "models/gemini-3.5-flash"
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
 MASKED_KEY = "••••••"
 
 
@@ -65,31 +59,6 @@ def _mask_key(value: str) -> str:
         return MASKED_KEY if key else ""
     return key[:4] + "…" + key[-4:]
 
-
-def reload_gemini_key_from_env() -> str:
-    """Re-read GEMINI_API_KEY from .env so Test Connection uses the live key."""
-    global GEMINI_API_KEY, client
-    load_dotenv(override=True)
-    GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    if GEMINI_API_KEY:
-        client = Client(api_key=GEMINI_API_KEY)
-    return GEMINI_API_KEY
-
-
-def resolve_gemini_key(form_key: str = "") -> str:
-    if form_key and not _is_masked_key(form_key):
-        return form_key.strip()
-    env_key = reload_gemini_key_from_env()
-    if env_key:
-        return env_key
-    return (dm.get_ai_config().get("api_key") or "").strip()
-
-
-def normalize_gemini_model(model: str) -> str:
-    name = (model or "").strip() or GEMINI_DEFAULT_MODEL
-    if not name.startswith("models/") and name.startswith("gemini"):
-        return f"models/{name}"
-    return name
 
 # ================= JSON MEMORY SYSTEM =================
 class DataManager:
@@ -128,10 +97,10 @@ class DataManager:
                 "total_broadcasts": 0
             },
             "ai_config": {
-                "provider": "gemini",
-                "endpoint": "https://generativelanguage.googleapis.com",
-                "api_key": "",
-                "model": "models/gemini-3.5-flash"
+                "provider": "custom",
+                "endpoint": "http://127.0.0.1:11434/v1",
+                "api_key": "123",
+                "model": "gptoss-20b"
             }
         }
     
@@ -182,6 +151,23 @@ class DataManager:
     def get_pdf_file_id(self) -> Optional[str]:
         """Get stored PDF file_id"""
         return self.data.get("pdf_file_id")
+
+    def save_media_asset(self, file_id: str, kind: str, name: str = "", description: str = ""):
+        assets = self.data.setdefault("media_assets", [])
+        asset = {"file_id": file_id, "kind": kind, "name": name, "description": description}
+        assets[:] = [item for item in assets if item.get("file_id") != file_id]
+        assets.append(asset)
+        if kind == "document" and (name.lower().endswith(".pdf") or "pdf" in description.lower()):
+            self.data["pdf_file_id"] = file_id
+        self.save()
+
+    def get_media_assets(self) -> List[Dict[str, str]]:
+        assets = self.data.get("media_assets") or []
+        if assets:
+            return assets
+        legacy_pdf = self.get_pdf_file_id()
+        return ([{"file_id": legacy_pdf, "kind": "document", "name": "PDF document", "description": "pdf document details brochure"}]
+                if legacy_pdf else [])
     
     def get_stats(self) -> Dict[str, Any]:
         """Get bot statistics"""
@@ -197,23 +183,27 @@ class DataManager:
         return self.data.get("bot_muted", False)
 
     def get_ai_config(self) -> Dict[str, Any]:
-        """AI provider settings (Gemini, OpenAI, or custom OpenAI-compatible)."""
+        """Local OpenAI-compatible model settings."""
         defaults = {
-            "provider": "gemini",
-            "endpoint": "https://generativelanguage.googleapis.com",
-            "api_key": "",
-            "model": "models/gemini-3.5-flash"
+            "provider": "custom",
+            "endpoint": "http://127.0.0.1:11434/v1",
+            "api_key": "123",
+            "model": "gptoss-20b"
         }
         stored = self.data.get("ai_config") or {}
         merged = {**defaults, **stored}
-        if not merged.get("provider"):
-            merged["provider"] = "gemini"
+        merged["provider"] = "custom"
+        if not merged.get("endpoint") or "generativelanguage.googleapis.com" in merged["endpoint"]:
+            merged["endpoint"] = defaults["endpoint"]
+            merged["api_key"] = defaults["api_key"]
+        if not merged.get("model") or merged["model"].strip().lower() == "qwen3.5:4b":
+            merged["model"] = defaults["model"]
         self.data["ai_config"] = merged
         return merged
 
-    def save_ai_config(self, endpoint: str, api_key: str, model: str, provider: str = "gemini"):
+    def save_ai_config(self, endpoint: str, api_key: str, model: str, provider: str = "custom"):
         current = self.get_ai_config()
-        current["provider"] = (provider or "gemini").strip().lower()
+        current["provider"] = "custom"
         current["endpoint"] = (endpoint or "").strip()
         if api_key and api_key.strip() and not _is_masked_key(api_key):
             current["api_key"] = api_key.strip()
@@ -224,8 +214,7 @@ class DataManager:
 
     def uses_openai_compatible(self) -> bool:
         cfg = self.get_ai_config()
-        provider = (cfg.get("provider") or "gemini").lower()
-        return provider in ("custom", "openai") and bool(cfg.get("endpoint") and cfg.get("api_key"))
+        return bool(cfg.get("endpoint") and cfg.get("api_key"))
 
     # ----- per-user chat history (chats/<user_id>.json, date sections) -----
     CHAT_DIR = Path("chats")
@@ -360,17 +349,8 @@ def get_cache_key(prompt: str, system_instruction: Optional[str] = None) -> str:
 
 async def get_cached_response_api(prompt: str, system_instruction: Optional[str] = None) -> Optional[Any]:
     """Get response from cache (JSON or memory) or call API"""
-    # Check JSON cache first
-    json_cached = dm.get_cached_response(prompt)
-    if json_cached:
-        print(f"✅ JSON Cache HIT (saved API call!)")
-        return type('obj', (object,), {'text': clean_reply_text(json_cached)})()
-    
-    # Check memory cache
+    # Replies depend on persona and conversation context, so avoid text-only cache hits.
     cache_key = get_cache_key(prompt, system_instruction)
-    if cache_key in response_cache:
-        print(f"✅ Memory Cache HIT (saved API call!)")
-        return response_cache[cache_key]
     
     response = await call_ai_with_retry(
         prompt=prompt,
@@ -434,7 +414,7 @@ _FINAL_MARK = re.compile(
     re.IGNORECASE,
 )
 _THINKING_ONLY = re.compile(
-    r"^\s*(?:thinking process|thinking|analysis|reasoning)\s*:|^\s*\d+\.\s+\*\*analyze\b|^\s*<think\b",
+    r"^\s*(?:thinking process|thinking|analysis|reasoning|let me think|we need to (?:answer|respond)|i should (?:answer|respond))\b|^\s*\d+\.\s+\*\*analyze\b|^\s*<think\b",
     re.IGNORECASE,
 )
 
@@ -455,6 +435,9 @@ def final_chat_text(text: str) -> str:
     if finals:
         raw = finals[-1]
     else:
+        # Never expose an analysis-only Harmony turn when no final answer was emitted.
+        if re.search(r"<\|channel\|>analysis<\|message\|>", raw, re.IGNORECASE) and not re.search(r"<\|channel\|>final<\|message\|>", raw, re.IGNORECASE):
+            return ""
         raw = re.sub(
             r"<\|channel\|>analysis<\|message\|>.*?(?=<\|start\|>|<\|channel\|>|$)",
             "",
@@ -462,8 +445,8 @@ def final_chat_text(text: str) -> str:
             flags=re.DOTALL | re.IGNORECASE,
         )
 
-    raw = re.sub(r"<think\b[^>]*>.*?</think>", "", raw, flags=re.DOTALL | re.IGNORECASE)
-    raw = re.sub(r"<thinking\b[^>]*>.*?</thinking>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r"<think\b[^>]*>.*?(?:</think\s*>|$)", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r"<thinking\b[^>]*>.*?(?:</thinking\s*>|$)", "", raw, flags=re.DOTALL | re.IGNORECASE)
     raw = re.sub(r"<\|[^|\n]{1,80}\|>", "", raw)
     raw = re.sub(r"(?<=[a-z])\.(?=[A-Z])", ".\n", raw)
     raw = re.sub(
@@ -482,12 +465,14 @@ def final_chat_text(text: str) -> str:
 
 
 def _visible_model_text(message: Dict[str, Any]) -> str:
-    """Use the answer channel only. Reasoning fields are scratch work and stay hidden."""
+    """Ignore explicit reasoning fields and expose only the final answer content."""
+    if str(message.get("channel") or message.get("reasoning_channel") or "").lower() == "analysis":
+        return ""
     return final_chat_text(_content_to_text(message.get("content")))
 
 
 def _fit_local_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """qwen3.5 on an 8GB GPU uses a 4096 context and drops prompts past ~2050 tokens."""
+    """Keep prompts compact for local model context limits."""
     system = []
     rest = []
     for item in messages:
@@ -511,13 +496,11 @@ async def call_custom_openai(
     cfg = dm.get_ai_config()
     url = _openai_chat_url(cfg.get("endpoint", ""))
     api_key = cfg.get("api_key") or ""
-    model = (cfg.get("model") or "").strip() or "gpt-4o-mini"
+    model = (cfg.get("model") or "").strip() or "gptoss-20b"
     if not url or not api_key:
         raise RuntimeError("Custom AI provider is not configured")
 
-    hidden = (
-        "Send only the chat message. No thinking, no analysis, no 'The user says'."
-    )
+    hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message."
     messages = []
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction.strip() + "\n\n" + hidden})
@@ -557,7 +540,7 @@ async def call_custom_openai(
         if not choices:
             return ""
         message = choices[0].get("message") or {}
-        return final_chat_text(_visible_model_text(message) or str(choices[0].get("text") or ""))
+        return _visible_model_text(message)
 
     async def _ask(http: httpx.AsyncClient, temperature: float) -> str:
         if "api.openai.com" not in url:
@@ -598,48 +581,16 @@ async def call_custom_openai(
         return _simple_text_response(text)
 
 
-def generate_gemini_content(
-    prompt: str,
-    system_instruction: Optional[str] = None,
-    api_key: Optional[str] = None,
-    model: Optional[str] = None,
-    history: Optional[List[Dict[str, str]]] = None,
-):
-    key = (api_key or resolve_gemini_key()).strip()
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY is missing in .env")
-    gemini_client = client if (client and key == GEMINI_API_KEY) else Client(api_key=key)
-    model_name = normalize_gemini_model(model or dm.get_ai_config().get("model") or GEMINI_DEFAULT_MODEL)
-    contents = prompt
-    if history:
-        lines = []
-        for item in history:
-            who = "Ishani" if item.get("role") == "bot" else "User"
-            lines.append(f"{who}: {(item.get('text') or '').strip()}")
-        contents = "Previous chat:\n" + "\n".join(lines) + "\n\nCurrent message:\n" + prompt
-    return gemini_client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config={
-            "system_instruction": system_instruction or FRIENDLY_SYSTEM_PROMPT,
-            "safety_settings": [],
-        },
-    )
-
-
 async def call_ai_with_retry(
     prompt: str,
     system_instruction: Optional[str] = None,
     max_retries: int = 3,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[Any]:
-    """Call Gemini (default) or a saved OpenAI-compatible custom provider."""
-    use_custom = dm.uses_openai_compatible()
+    """Call the configured local OpenAI-compatible model."""
     for attempt in range(max_retries):
         try:
-            if use_custom:
-                return await call_custom_openai(prompt, system_instruction, history=history)
-            return generate_gemini_content(prompt, system_instruction, history=history)
+            return await call_custom_openai(prompt, system_instruction, history=history)
         except Exception as e:
             error_str = str(e)
             is_busy = "503" in error_str or "UNAVAILABLE" in error_str
@@ -659,22 +610,11 @@ async def call_ai_with_retry(
     return None
 
 
-call_gemini_with_retry = call_ai_with_retry
-
 # ========== PRE-WRITTEN MESSAGES ==========
-WELCOME_MESSAGES = [
-    "Swagat hai {name}! Aap Chelsea Football group me aa gaye hain. Koi bhi doubt ho to pooch sakte hain. 😊 https://t.me/+Qv2p0w48dy81NDFl",
-    # "Welcome {name}! Yahan daily prediction aur updates milti rehti hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    # "Hello {name}, group me aapka swagat hai. Aaram se explore karein aur sawal poochein. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    # "{name} ji, welcome to Chelsea Football. Agar guidance chahiye ho to main help kar dungi. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-    # "Namaste {name}! Aap yahan se simple steps me start kar sakte hain. https://bharatgoal.online/access/signup?id=945667\n\nGroup: https://t.me/Bharat_Goal",
-]
-
-LEFT_MESSAGES = [
-    "Goodbye {name}. Aapka time yahan achha raha hoga. Kabhi bhi wapas aa sakte hain.",
-    "{name} group se chale gaye. Aapko future ke liye best wishes. 👋",
-    "Take care {name}. Agar dobara join karna ho to welcome rahenge.",
-]
+# Content lives in persona.json (prewritten_messages).
+# Loaded by load_prewritten_messages() with the persona helpers below.
+WELCOME_MESSAGES: List[str] = []
+LEFT_MESSAGES: List[str] = []
 
 # ========== ACKNOWLEDGMENT & CHAT ENDING WORDS ==========
 ACKNOWLEDGMENT_WORDS = {
@@ -707,108 +647,18 @@ def clean_reply_text(text: str) -> str:
     return text.strip()
 
 
+def user_language_notice(user_text: str, english: str, hinglish: str, hindi: str) -> str:
+    if re.search(r"[\u0900-\u097f]", user_text or ""):
+        return hindi
+    if re.search(r"\b(kya|kaise|kyun|mujhe|tum|aap|hai|ho|bhejo|chahiye|haan|nahi|yaar)\b", user_text or "", re.IGNORECASE):
+        return hinglish
+    return english
+
+
 # ========== KEYWORD-BASED FAQ ==========
-KEYWORD_RESPONSES = {
-"invest": "Aap ₹200 se start kar sakte hain. System daily 3–5% ka prediction match return deta hai. 😊",
-"profit": "Daily 3% se 5% tak ka profit prediction matches ke through milta hai.",
-"return": "Daily 3–5% return milta hai, jo prediction matches par depend karta hai.",
-"daily": "Yahan daily 3% to 5% profit milta hai. Bas prediction follow karni hoti hai.",
-"minimum invest": "Minimum deposit ₹200 hai. Isse aap system test bhi kar sakte hain.",
-"company lifetime": "Chelsea Football ka goal long-term stable aur fast growth dena hai.",
-"30 din profit": "Example: Daily 3% to 5% percentage ke hisaab se monthly achha compound profit ho sakta hai.",
-"compounding": "Agar aap daily profit reinvest karte hain, to compounding se amount faster grow hota hai.",
-
-# ===== REFERRAL & TEAM =====
-"referral": "Referral system me har referral par 8% reward bonus milta hai[cite: 3].",
-"team": "Team banane se aapko 6 levels tak team income milti hai[cite: 1], jo total 15% passive income ban sakti hai[cite: 1].",
-"commission": "Level 1: 7%, Level 2: 3%, Level 3: 2%, Level 4: 1%, Level 5: 1%, Level 6: 1% commission milta hai[cite: 1].",
-"level": "6 levels ka income system hai[cite: 1]: LV1 (7%), LV2 (3%), LV3 (2%), LV4 (1%), LV5 (1%), LV6 (1%)[cite: 1].",
-"bonus referral": "Every referral par 8% reward bonus direct wallet me add hota hai[cite: 3].",
-
-# ===== WITHDRAWAL & BALANCE =====
-"withdraw": "Minimum withdrawal ₹500 hai[cite: 4]. Fast withdrawal options available hain[cite: 4, 5].",
-"withdrawal": "Aap withdrawal request kar sakte hain[cite: 4]. Minimum withdrawal amount ₹500 hai[cite: 4].",
-"minimum withdraw": "Minimum withdrawal ₹500 hai[cite: 4], jabki minimum deposit ₹200 se start hota hai[cite: 4].",
-"recharge pending": "Kabhi-kabhi payment sync hone me 5–10 minute lagte hain. Fast transaction options available hain[cite: 4, 5].",
-"balance nahi dikha": "Wallet update hone me thoda time lag sakta hai. 10 minute baad dobara check karein.",
-
-# ===== BONUSES =====
-"bonus": "Every deposit par 6% deposit bonus[cite: 2] aur referral par 8% reward bonus milta hai[cite: 3]. Total level income 15% hai[cite: 1].",
-"welcome bonus": "Har deposit par 6% deposit bonus automatically add hota hai[cite: 2].",
-"reward": "System me daily profit[cite: 5], 6% deposit bonus[cite: 2], 8% referral bonus[cite: 3] aur level income options available hain[cite: 1].",
-"cashback": "Platform par different deposit bonuses (6%) aur referral rewards (8%) milte hain[cite: 2, 3].",
-
-# ===== PREDICTIONS (IMPORTANT SECTION) =====
-"prediction": "Daily live match predictions share hoti hain[cite: 2, 3, 5]. Aap bas unhe follow karke 3% to 5% daily profit le sakte hain[cite: 5].",
-"prediction time": "Live matches predictions daily platform/group me share hoti hain[cite: 2, 3, 5].",
-"football knowledge": "Aapko extra football knowledge ki zarurat nahi. Accurate predictions ko bas follow karna hota hai[cite: 2, 5].",
-"predictions kaise": "System daily simple predictions deta hai[cite: 2, 5]. Unhe follow karne par 3–5% return milta hai[cite: 5].",
-
-# ===== TRUST & SAFETY =====
-"risk": "System prediction match model par kaam karta hai[cite: 2, 5]. Aap ₹200 se start karke khud test kar sakte hain[cite: 4].",
-"safe": "Platform safe & secure transactions provide karta hai[cite: 1, 4, 5]. Aap pehle chhota amount (₹200) use karke check kar sakte hain[cite: 4].",
-"scam": "Aap khud ₹200 minimum deposit se start karke system ko test kar sakte hain[cite: 4].",
-"real": "Platform par multiple payment options (UPI, PhonePe, GPay, Paytm, USDT) transparently available hain[cite: 4].",
-"legal": "Transactions safe, secure aur transparent hote hain[cite: 1, 4, 5].",
-
-# ===== GETTING STARTED =====
-"start": "Aap ₹200 deposit karke start kar sakte hain[cite: 4]. Process simple aur fast hai[cite: 4, 5].",
-"kaise shuru kare": "Steps: 1) Join Now / Signup[cite: 1, 2, 3, 4, 5], 2) ₹200 deposit[cite: 4], 3) Daily match prediction follow karein[cite: 2, 5].",
-"account banana": "Join now click karke ₹200 deposit karein[cite: 4]. Account turant active ho jata hai.",
-"app": "Mobile app interface available hai for fast transactions and live betting predictions[cite: 4, 5].",
-
-# ===== PDF & DOCUMENTS =====
-"pdf": "Complete details Admin se mangaen.",
-"document": "Saari documents aur details Admin dwara available ki jati hain.",
-"info pdf": "Yeh complete guide PDF Admin se praapt karein.",
-"details": "Full system details PDF me explain ki gayi hain.",
-
-# ===== LINKS (ONLY ON REQUEST) =====
-"link": "Signup link ke liye Join Now button click karein ya Admin se mangayein[cite: 1, 2, 3, 4, 5].",
-"join link": "Signup link: Click Join Now button on website[cite: 1, 2, 3, 4, 5].",
-"group": "Official Telegram group join karein.",
-"telegram": "Aap official Telegram group join kar sakte hain.",
-"signup": "Signup link ke zariye Join Now karein[cite: 1, 2, 3, 4, 5].",
-
-# ===== GREETING & CHAT =====
-"hello": "Namaste! Aap Chelsea Football platform ke baare me kya jaanna chahte hain? 😊",
-"hi": "Hello! Main aapki help kar sakti hoon. Kya poochna hai?",
-"namaste": "Namaste! Agar koi doubt ho to pooch sakte hain.",
-"aapka naam": "Main Ishani hoon, Chelsea Football ki assistant.",
-"koun ho": "Main Ishani hoon, yahan users ko guide karne ke liye.",
-
-# ===== GENERAL =====
-"how": "Simple process hai: signup karein, ₹200 deposit karein[cite: 4], aur daily prediction follow karein[cite: 2, 5].",
-"kaise": "Bas ₹200 deposit karein[cite: 4] aur daily match prediction follow karein[cite: 2, 5]. System simple hai.",
-"idea": "Chelsea Football ek prediction platform hai jahan daily 3% se 5% percentage profit milta hai[cite: 5].",
-"timing": "Predictions live matches par hoti hain[cite: 2, 3, 5] aur instant/fast processing options available hain[cite: 4, 5].",
-"money": "Deposit par 6% bonus[cite: 2] aur daily 3–5% match prediction return milta hai[cite: 5].",
-"plan": "Deposit par 6% bonus[cite: 2], daily 3–5% profit[cite: 5], aur 6-level total 15% income structure hai[cite: 1].",
-"membership": "Sabhi users ke liye same transparent system aur rewards hote hain[cite: 1, 4].",
-"tax": "Multiple payment channels available hain (UPI, Bank Transfer, USDT)[cite: 4].",
-"indian": "UPI, Paytm, PhonePe, GPay jaise Indian payment gateways supported hain[cite: 4].",
-
-# Documents
-"pdf": "Complete details PDF me mil jayengi. Admin se PDF mangaen.",
-"document": "Saari documents PDF format me available hain.",
-"details": "Full system details PDF me explain ki gayi hain.",
-
-# ===== MISCELLANEOUS =====
-"how": "Sirf 3 steps: Join Now[cite: 1, 2, 3, 4, 5] → ₹200 deposit karo[cite: 4] → Daily profit kamao! 🎯[cite: 5]",
-"kaise": "Simple! Deposit karo[cite: 4], predictions follow karo[cite: 2, 5], profit nikalo! 💰[cite: 4]",
-"idea": "Chelsea Football ek sports prediction platform hai jahan daily fixed percentage profit milta hai! 🌟[cite: 5]",
-"timing": "Live match predictions daily aati hain[cite: 2, 3, 5], aur fast withdrawal possible hai! ⏰[cite: 4, 5]",
-"money": "₹200 minimum invest[cite: 4] → 6% deposit bonus[cite: 2] → 3-5% daily profit! 🚀[cite: 5]",
-"speed": "Fast transaction and instant processing platform! ⚡[cite: 4, 5]",
-"plan": "Single plan: ₹200 min deposit[cite: 4], 3–5% daily profit[cite: 5], 8% per referral reward[cite: 3]! 🎯",
-"membership": "Saare members ke liye 6-level referral income system available hai! 💪[cite: 1]",
-"tax": "Transparent payment methods: UPI, GPay, PhonePe, Bank Transfer & USDT! ✅[cite: 4]",
-"indian": "UPI & Indian bank transfers supported! 🇮🇳[cite: 4]",
-"app": "Mobile app UI available hai fast deposit/withdrawal aur predictions ke liye! 📱[cite: 4, 5]",
-
-
-}
-KEYWORD_RESPONSES = {k: clean_reply_text(v) for k, v in KEYWORD_RESPONSES.items()}
+# Content lives in persona.json (keyword_responses).
+# Loaded by load_keyword_responses() once the persona helpers are defined below.
+KEYWORD_RESPONSES: Dict[str, str] = {}
 
 # ========== ALLOWED LINKS (WHITELIST) ==========
 ALLOWED_LINKS = [
@@ -862,46 +712,138 @@ def has_any_links(text: str) -> bool:
 # ========== SYSTEM PROMPTS (from persona.json) ==========
 PERSONA_PATH = Path("persona.json")
 
+_TOKEN_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _render_template(template: Any, values: Dict[str, Any]) -> str:
+    """Replace {token} safely. Unknown tokens stay untouched, no KeyError."""
+    return _TOKEN_PATTERN.sub(lambda m: str(values.get(m.group(1), m.group(0))), str(template))
+
+
+MINIMAL_PERSONA: Dict[str, Any] = {
+    "name": "Ishani Sharma",
+    "age": 23,
+    "master_prompt": "You are Ishani Sharma, a 23-year-old Indian girl chatting in Hinglish.",
+    "company": {},
+}
+
 
 def load_persona() -> Dict[str, Any]:
+    """Load persona.json; a bad edit falls back to its saved fallback block."""
     try:
         with PERSONA_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict) and data.get("master_prompt"):
-            return data
     except Exception as e:
         print(f"⚠️ persona.json load error: {e}")
-    return {
-        "name": "Ishani Sharma",
-        "age": 23,
-        "master_prompt": "You are Ishani Sharma, a 23-year-old Indian girl chatting in Hinglish.",
-        "company": {},
-    }
+        return dict(MINIMAL_PERSONA)
+    if not isinstance(data, dict):
+        return dict(MINIMAL_PERSONA)
+    if not isinstance(data.get("master_prompt"), str) or not data["master_prompt"].strip():
+        fallback = data.get("fallback")
+        if isinstance(fallback, dict) and isinstance(fallback.get("master_prompt"), str):
+            return dict(fallback)
+        return dict(MINIMAL_PERSONA)
+    return data
+
+
+def load_prewritten_messages(persona: Optional[Dict[str, Any]] = None) -> tuple:
+    """Read welcome/left messages from persona.json with safe fallbacks."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    raw = source.get("prewritten_messages") if isinstance(source, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _clean_list(key: str, fallback: str) -> List[str]:
+        value = raw.get(key)
+        if isinstance(value, list):
+            cleaned = [m.strip() for m in value if isinstance(m, str) and m.strip()]
+            if cleaned:
+                return cleaned
+        return [fallback]
+
+    return (
+        _clean_list("welcome", "Swagat hai {name}! Group me aapka swagat hai. 😊"),
+        _clean_list("left", "Goodbye {name}. Kabhi bhi wapas aa sakte hain."),
+    )
+
+
+WELCOME_MESSAGES, LEFT_MESSAGES = load_prewritten_messages()
 
 
 def company_brief(persona: Optional[Dict[str, Any]] = None) -> str:
-    company = (persona or load_persona()).get("company") or {}
-    facts = company.get("facts") or []
-    steps = company.get("join_steps") or []
-    lines = [
-        f"Company: {company.get('name') or 'Chelsea Football'}",
-        company.get("role") or "",
-        "END GOAL (this is the destination of every chat, without sounding like an ad):",
-        company.get("end_goal") or "Get them to join Chelsea Football, then start with ₹200 and follow predictions.",
-        f"Join link: {company.get('join_link') or 'https://t.me/+Qv2p0w48dy81NDFl'}",
-        "Join then what:",
-        *[f"- {item}" for item in steps],
-        "Facts:",
-        *[f"- {item}" for item in facts],
-        company.get("rule") or "",
-    ]
-    return "\n".join(part for part in lines if part)
+    """Build the company fact block from the persona.json company_brief template."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    company = source.get("company") if isinstance(source, dict) else None
+    if not isinstance(company, dict):
+        company = {}
+
+    config = source.get("company_brief") if isinstance(source, dict) else None
+    if not isinstance(config, dict):
+        config = {}
+    defaults = config.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+    lines = config.get("lines")
+    if not isinstance(lines, list) or not lines:
+        lines = [
+            "Company: {company_name}",
+            "{role}",
+            "END GOAL (this is the destination of every chat, without sounding like an ad):",
+            "{end_goal}",
+            "Join link: {join_link}",
+            "Join then what:",
+            "{join_steps}",
+            "Facts:",
+            "{facts}",
+            "{rule}",
+        ]
+    prefix = config.get("bullet_prefix")
+    if not isinstance(prefix, str):
+        prefix = "- "
+
+    facts = company.get("facts")
+    if not isinstance(facts, list):
+        facts = []
+    steps = company.get("join_steps")
+    if not isinstance(steps, list):
+        steps = []
+    values = {
+        "company_name": company.get("name") or defaults.get("company_name") or "Chelsea Football",
+        "role": company.get("role") or "",
+        "end_goal": company.get("end_goal") or defaults.get("end_goal") or "Get them to join Chelsea Football, then start with ₹200 and follow predictions.",
+        "join_link": company.get("join_link") or defaults.get("join_link") or "https://t.me/+Qv2p0w48dy81NDFl",
+        "join_steps": "\n".join(f"{prefix}{item}" for item in steps),
+        "facts": "\n".join(f"{prefix}{item}" for item in facts),
+        "rule": company.get("rule") or "",
+    }
+    rendered = [_render_template(line, values) for line in lines]
+    return "\n".join(part for part in rendered if part)
 
 
 def persona_system_prompt() -> str:
     persona = load_persona()
     return (persona.get("master_prompt") or "").strip()
 
+
+def load_keyword_responses(persona: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """Read keyword FAQ from persona.json. Bad entries are skipped, never fatal."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    raw = source.get("keyword_responses") if isinstance(source, dict) else None
+    if not isinstance(raw, dict):
+        print("⚠️ persona.json missing keyword_responses; FAQ keywords disabled", flush=True)
+        return {}
+    cleaned: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        keyword = key.strip().lower()
+        reply = clean_reply_text(value)
+        if keyword and reply:
+            cleaned[keyword] = reply
+    return cleaned
+
+
+KEYWORD_RESPONSES: Dict[str, str] = load_keyword_responses()
 
 FRIENDLY_SYSTEM_PROMPT = persona_system_prompt()
 COMPANY_KNOWLEDGE = company_brief()
@@ -914,40 +856,63 @@ def chat_display_name(record: Dict[str, Any], first_name: str) -> str:
     return raw or "tum"
 
 
+def _format_memory_line(template: Any, **values: str) -> str:
+    """Render a persona.json memory line; a bad value never crashes the bot."""
+    return _render_template(template, values)
+
+
 def build_personal_system(user_id: int, first_name: str, history: List[Dict[str, str]], compact: bool = False) -> str:
+    """Build the per-user prompt from persona.json plus that chat's saved memory."""
     persona = load_persona()
     record = dm.load_chat(user_id, first_name)
     mem = record.get("memory") or {}
     name = chat_display_name(record, first_name)
+
+    prompts = persona.get("system_prompts")
+    if not isinstance(prompts, dict):
+        prompts = {}
+    labels = prompts.get("memory_labels")
+    if not isinstance(labels, dict):
+        labels = {}
+    defaults = prompts.get("memory_defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+    values = {
+        "name": name,
+        "about": mem.get("about") or defaults.get("about") or "",
+        "topics": ", ".join(mem.get("topics") or []) or defaults.get("topics") or "fresh chat",
+        "focus": mem.get("last_focus") or defaults.get("focus") or "-",
+    }
     memory_lines = [
-        f"Talking to: {name}",
-        f"About them: {mem.get('about') or 'Abhi intro collect ho raha hai. Telegram display name ignore karo if they told a first name.'}",
-        f"Things they talked about: {', '.join(mem.get('topics') or []) or 'fresh chat'}",
-        f"Right now they are on: {mem.get('last_focus') or '-'}",
+        _format_memory_line(labels.get("talking_to", "Talking to: {name}"), **values),
+        _format_memory_line(labels.get("about", "About them: {about}"), **values),
+        _format_memory_line(labels.get("topics", "Things they talked about: {topics}"), **values),
+        _format_memory_line(labels.get("focus", "Right now they are on: {focus}"), **values),
     ]
+
+    compact_raw = prompts.get("compact")
+    full_raw = prompts.get("full_after_memory")
+    compact_lines = [str(line) for line in compact_raw if str(line).strip()] if isinstance(compact_raw, list) else []
+    full_lines = [str(line) for line in full_raw if str(line).strip()] if isinstance(full_raw, list) else []
+    if not compact_lines:
+        compact_lines = [
+            "You are Ishani Sharma, 23, on Telegram. Reply in short, natural Hinglish. Send only the reply."
+        ]
+
     if compact:
-        # Local models drop the long persona and then answer without the company facts.
-        return "\n".join([
-            "You are Ishani Sharma, 23, on Telegram. Talk in natural Hinglish, like a girl in the chat, not like an essay or a call-center script.",
-            "Read the whole thread, understand the latest message, then send only the reply. Never write your reasoning.",
-            "Never write lines such as 'The user says', 'They want to know', 'Probably ask', or 'The assistant should'.",
-            "Hello or hi: one short greeting and one short question. No extra lines.",
-            "If the message is unclear, ask one short Hinglish question. Do not list every possible meaning.",
-            "When they ask about Chelsea Football, joining, earning, deposit, withdrawal, referral, or the app, answer only from the company facts below. Do not invent numbers, links, or steps.",
-            "Teach one next step at a time, in simple lines, like to a beginner. Use a short numbered list and a few emojis only when they asked how to do something. Do not explain the whole company in one message.",
-            *memory_lines,
+        learned = persona.get("learned_from_admin") or []
+        if isinstance(learned, str):
+            learned = [learned]
+        learning_block = "Admin ki learned instructions:\n" + "\n".join(f"- {item}" for item in learned if isinstance(item, str) and item.strip()) if learned else ""
+        parts = [*compact_lines, learning_block, *memory_lines, company_brief(persona)]
+    else:
+        parts = [
+            (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
             company_brief(persona),
-        ])
-    return "\n".join([
-        (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
-        company_brief(persona),
-        *memory_lines,
-        "Reply only to the latest user message, but with full thread memory, like ChatGPT.",
-        "Feel like a real girl sitting on the other side of the phone.",
-        "Length: 1 or 2 short lines. Add a third line only when the user asked for steps or a list. No filler, no headings, no repeat of their message.",
-        "If the message is unclear, incomplete, or could mean two things, do not guess. Ask one short question to confirm what they mean.",
-        "Soft end-goal: after trust/vibe, invite them to JOIN Chelsea Football, then ₹200 start, then follow predictions. One natural nudge is enough — not every message.",
-    ])
+            *memory_lines,
+            *full_lines,
+        ]
+    return "\n".join(part for part in parts if part)
 
 
 # ================= ADMIN PANEL =================
@@ -990,7 +955,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = query.data
     
     if action == "admin_upload":
-        await query.edit_message_text("📁 Please send the PDF document to upload.")
+        await query.edit_message_text("📁 Send a PDF, document, or photo. Add a caption describing what it contains so I can send the right file when users ask.")
         context.user_data['awaiting_document'] = True
     
     elif action == "admin_broadcast":
@@ -1018,20 +983,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== DOCUMENT UPLOAD HANDLER ==========
 async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle document upload from admin"""
-    if update.effective_user.id != ADMIN_ID:
+    """Save an admin's PDF, other document, or photo for matching user requests."""
+    message = update.effective_message
+    if update.effective_user.id != ADMIN_ID or not message:
         return
-    
     if not context.user_data.get('awaiting_document'):
         return
-    
-    if update.message.document:
-        file_id = update.message.document.file_id
-        dm.set_pdf_file_id(file_id)
-        await update.message.reply_text("✅ Document uploaded successfully!")
-        context.user_data['awaiting_document'] = False
+    if message.document:
+        file_id = message.document.file_id
+        name = message.document.file_name or "document"
+        kind = "document"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        name = "photo"
+        kind = "photo"
     else:
-        await update.message.reply_text("❌ Please send a valid document.")
+        return
+    dm.save_media_asset(file_id, kind, name, message.caption or "")
+    context.user_data['awaiting_document'] = False
+    await message.reply_text(f"✅ Saved {name}. Add a descriptive caption next time to help me match it to user requests.")
 
 # ========== BROADCAST HANDLER ==========
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1043,15 +1013,21 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     broadcast_message = update.message.text
-    stats = dm.get_stats()
-    stats['total_broadcasts'] += 1
+    sent = 0
+    failed = 0
+    for user_id in list(dm.data.get("users", {})):
+        try:
+            await context.bot.send_message(chat_id=int(user_id), text=broadcast_message)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            print(f"⚠️ Broadcast failed for {user_id}: {e}", flush=True)
+    dm.data.setdefault("stats", {}).setdefault("total_broadcasts", 0)
+    dm.data["stats"]["total_broadcasts"] += 1
     dm.save()
-    
-    await update.message.reply_text(
-        f"✅ Broadcast recorded: {broadcast_message}\n"
-        f"(Note: Manual implementation of bulk message sending required)"
-    )
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users. Failed: {failed}.")
     context.user_data['awaiting_broadcast'] = False
+    raise ApplicationHandlerStop
 
 # ================= HELP COMMAND =================
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1066,11 +1042,45 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /details - Get the uploaded document\n\n"
         "<b>Admin Commands:</b>\n"
         "• /panel - Open admin panel\n"
+        "• /learn <code>instruction</code> - Teach Ishani (admin only)\n"
         "• /stop - Stop the bot\n\n"
         "<i>Just ask questions or send messages for instant replies!</i>"
     )
     
     await update.message.reply_text(help_text, parse_mode="HTML")
+
+
+def _save_persona_learning(lesson: str):
+    persona = load_persona()
+    learned = persona.setdefault("learned_from_admin", [])
+    if isinstance(learned, str):
+        learned = persona["learned_from_admin"] = [learned]
+    if lesson not in learned:
+        learned.append(lesson)
+    with PERSONA_PATH.open("w", encoding="utf-8") as f:
+        json.dump(persona, f, indent=2, ensure_ascii=False)
+
+
+async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.effective_message.reply_text("❌ Admin only!")
+        return
+    lesson = " ".join(context.args).strip()
+    if not lesson:
+        context.user_data["awaiting_learning"] = True
+        await update.effective_message.reply_text("Tell me what to learn in your next message, or use /learn <instruction>.")
+        return
+    _save_persona_learning(lesson)
+    await update.effective_message.reply_text("✅ Samajh gayi, yaad rakhungi. persona.json mein save kar diya.")
+
+
+async def handle_admin_learning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if (update.effective_user.id == ADMIN_ID and context.user_data.get("awaiting_learning")
+            and update.effective_message and update.effective_message.text):
+        _save_persona_learning(update.effective_message.text.strip())
+        context.user_data["awaiting_learning"] = False
+        await update.effective_message.reply_text("✅ Samajh gayi, yaad rakhungi. persona.json mein save kar diya.")
+        raise ApplicationHandlerStop
 
 # ================= SCHEDULED MESSAGES =================
 async def scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
@@ -1232,6 +1242,22 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⏭️ Message from bot - Not replying")
         return
     
+    has_media_type = bool(re.search(
+        r"\b(pdf|document|file|brochure|guide|details?|photo|picture|image|poster|form|attachment)\b|"
+        r"(pdf|brochure|tasveer|chitra)", user_text, re.IGNORECASE
+    ))
+    media_request = has_media_type and bool(re.search(
+        r"\b(send|share|show|give|get|need|want|upload|forward|provide|bhejo|bhej|dikhao|chahiye|please|plz)\b",
+        user_text, re.IGNORECASE
+    ))
+    if media_request:
+        asset = find_media_asset(user_text)
+        if asset:
+            await send_media_asset(context.bot, update.effective_chat.id, asset)
+            dm.append_chat(user_id, first_name, "user", user_text)
+            dm.append_chat(user_id, first_name, "bot", f"Sent file: {asset.get('name') or asset.get('kind', 'file')}")
+            return
+
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     history = dm.recent_chat(user_id, first_name, limit=24)
@@ -1242,6 +1268,8 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history,
         compact=dm.uses_openai_compatible(),
     )
+    if has_media_type:
+        personal_system += "\nIf the user asks for a file that is not among the files actually sent in this chat, say it is not available yet and suggest asking the admin. Never claim you attached or sent a file unless the bot actually sent it."
     
     try:
         response = await call_ai_with_retry(
@@ -1251,7 +1279,11 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if response is None:
-            await update.message.reply_text("Server busy, try again soon ⏳")
+            await update.message.reply_text(user_language_notice(
+                user_text, "The server's a little busy right now. Please try again soon ⏳",
+                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
+                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
+            ))
             return
         
         reply = clean_reply_text(response.text) if response and response.text else ""
@@ -1260,7 +1292,11 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply)
             dm.append_chat(user_id, first_name, "bot", reply)
         else:
-            await update.message.reply_text("Arre bhai, thoda confuse ho gaya! 😅")
+            await update.message.reply_text(user_language_notice(
+                user_text, "Sorry, I didn't quite catch that. Could you say it another way?",
+                "Sorry yaar, main samajh nahi paayi 😅 Ek baar aur bataoge?",
+                "माफ़ कीजिए, मैं ठीक से समझ नहीं पाई 😅 एक बार फिर बताएँगे?",
+            ))
     
     except Exception as e:
         error_msg = str(e)
@@ -1271,7 +1307,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             await asyncio.sleep(10)
             try:
-                retry_response = await call_gemini_with_retry(
+                retry_response = await call_ai_with_retry(
                     prompt=user_text,
                     system_instruction=personal_system,
                     history=history,
@@ -1283,11 +1319,23 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
             except Exception as retry_error:
                 print(f"❌ ERROR after 10s wait: {retry_error}")
-            await update.message.reply_text("Server busy, try again soon ⏳")
+            await update.message.reply_text(user_language_notice(
+                user_text, "The server's a little busy right now. Please try again soon ⏳",
+                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
+                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
+            ))
         elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            await update.message.reply_text("Server busy, try again soon ⏳")
+            await update.message.reply_text(user_language_notice(
+                user_text, "The server's a little busy right now. Please try again soon ⏳",
+                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
+                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
+            ))
         else:
-            await update.message.reply_text("Technical issue, please try again 🙏")
+            await update.message.reply_text(user_language_notice(
+                user_text, "I hit a small technical issue. Please try again in a moment 🙏",
+                "Chhota sa technical issue aa gaya yaar, ek minute baad try karna 🙏",
+                "तकनीकी दिक्कत आ गई है, एक मिनट बाद फिर कोशिश कीजिए 🙏",
+            ))
 
 # ================= WELCOME & EXIT LOGIC =================
 async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1308,11 +1356,11 @@ async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # CASE 1: MEMBER JOINED
         if old_status in ["left", "kicked"] and new_status == "member":
-            ai_text = random.choice(WELCOME_MESSAGES).format(name=user_name)
+            ai_text = _render_template(random.choice(WELCOME_MESSAGES), {"name": user_name})
         
         # CASE 2: MEMBER LEFT/KICKED
         elif old_status == "member" and new_status in ["left", "kicked"]:
-            ai_text = random.choice(LEFT_MESSAGES).format(name=user_name)
+            ai_text = _render_template(random.choice(LEFT_MESSAGES), {"name": user_name})
         
         else:
             return
@@ -1330,22 +1378,56 @@ async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE)
         print(f"❌ Welcome/Exit error: {e}")
 
 # ================= DOCUMENT REQUEST HANDLERS =================
+_MEDIA_WORDS = {"pdf", "document", "file", "photo", "picture", "image"}
+_MEDIA_STOP_WORDS = {"send", "share", "show", "give", "get", "me", "please", "the", "a", "an", "your", "you", "can", "could", "want", "need", "mujhe", "bhejo", "bhej", "do", "dikhao", "chahiye", "karo", "hai", "hey", "hi", "please"}
+
+
+def find_media_asset(request: str = "", preferred_kind: Optional[str] = None) -> Optional[Dict[str, str]]:
+    assets = [asset for asset in dm.get_media_assets() if isinstance(asset, dict) and asset.get("file_id")]
+    if not assets:
+        return None
+    query = (request or "").lower()
+    if not preferred_kind:
+        if re.search(r"\b(photo|picture|image|poster)\b|photo|tasveer|chitra", query):
+            preferred_kind = "photo"
+        elif re.search(r"\b(pdf|document|file|brochure|guide|details|form)\b|pdf|document|brochure", query):
+            preferred_kind = "document"
+    candidates = [item for item in assets if item.get("kind") == preferred_kind] if preferred_kind else assets
+    if not candidates:
+        return None
+    terms = {word for word in re.findall(r"[\w-]+", query) if len(word) > 2 and word not in _MEDIA_STOP_WORDS and word not in _MEDIA_WORDS}
+    if terms:
+        ranked = []
+        for order, item in enumerate(candidates):
+            labels = f"{item.get('name', '')} {item.get('description', '')}".lower()
+            score = sum(1 for term in terms if term in labels)
+            if score:
+                ranked.append((score, order, item))
+        if ranked:
+            return max(ranked, key=lambda row: (row[0], row[1]))[2]
+        return None
+    return candidates[-1]
+
+
+async def send_media_asset(bot, chat_id: int, asset: Dict[str, str]):
+    file_id = asset["file_id"]
+    caption = asset.get("description") or None
+    if asset.get("kind") == "photo":
+        await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+    else:
+        await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+
+
 async def handle_pdf_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle PDF, document, or details requests"""
-    
-    file_id = dm.get_pdf_file_id()
-    
-    if not file_id:
+    asset = find_media_asset("pdf", preferred_kind="document")
+    if not asset:
         await update.message.reply_text(
             "📄 Document not available yet. Please contact admin."
         )
         return
-    
     try:
-        await context.bot.send_document(
-            chat_id=update.effective_chat.id,
-            document=file_id
-        )
+        await send_media_asset(context.bot, update.effective_chat.id, asset)
         print(f"✅ Sent document to user {update.effective_user.id}")
     except Exception as e:
         print(f"❌ Error sending document: {e}")
@@ -1457,20 +1539,14 @@ CONFIG_PAGE = r"""<!DOCTYPE html>
 <body>
   <div class="card">
     <h1>Custom AI Configuration</h1>
-    <div class="note" id="note">Gemini uses GEMINI_API_KEY from your .env file</div>
-    <label>AI Provider:</label>
-    <select id="provider">
-      <option value="gemini">Gemini (Google)</option>
-      <option value="openai">OpenAI</option>
-      <option value="custom">Custom Provider</option>
-    </select>
-    <label id="endpoint_label">API Endpoint:</label>
-    <input id="endpoint" placeholder="https://generativelanguage.googleapis.com">
+    <div class="note" id="note">Configure your local OpenAI-compatible model server.</div>
+    <label>Local API Endpoint:</label>
+    <input id="endpoint" placeholder="http://127.0.0.1:11434/v1">
     <label>API Key:</label>
-    <input id="api_key" type="password" placeholder="from .env">
+    <input id="api_key" type="password" placeholder="Local server API key">
     <label>Model Name:</label>
-    <input id="model" placeholder="models/gemini-3.5-flash">
-    <div class="hint" id="hint">Leave empty for provider default</div>
+    <input id="model" placeholder="gptoss-20b" autocomplete="off">
+    <div class="hint" id="hint">Enter the exact model name installed in your local model server.</div>
     <button class="btn" id="test">Test Connection</button>
     <button class="save" id="save">Save Provider</button>
     <div class="msg" id="msg"></div>
@@ -1484,42 +1560,18 @@ CONFIG_PAGE = r"""<!DOCTYPE html>
 <script>
 const msg = (t, ok) => { const el = document.getElementById('msg'); el.textContent = t; el.className = 'msg ' + (ok ? 'ok' : 'err'); };
 document.getElementById('health').textContent = location.origin + '/health';
-function applyProvider() {
-  const p = document.getElementById('provider').value;
-  const endpoint = document.getElementById('endpoint');
-  const key = document.getElementById('api_key');
-  const model = document.getElementById('model');
-  const note = document.getElementById('note');
-  const hint = document.getElementById('hint');
-  if (p === 'gemini') {
-    endpoint.value = 'https://generativelanguage.googleapis.com';
-    endpoint.disabled = true;
-    if (!key.value) key.value = '••••••';
-    if (!model.value || model.value.includes('gpt')) model.value = 'models/gemini-3.5-flash';
-    note.textContent = 'Gemini uses GEMINI_API_KEY from your .env file';
-    hint.textContent = 'Test Connection reads the key from .env automatically';
-  } else {
-    endpoint.disabled = false;
-    note.textContent = 'Free users must use their own API keys';
-    hint.textContent = 'Leave empty for provider default';
-    if (p === 'openai') {
-      endpoint.value = 'https://api.openai.com/v1/chat/completions';
-      if (!model.value || model.value.includes('gemini')) model.value = 'gpt-4o-mini';
-    }
-  }
-}
-document.getElementById('provider').onchange = applyProvider;
 async function load() {
-  const r = await fetch('/api/config'); const d = await r.json();
-  document.getElementById('provider').value = d.provider || 'gemini';
-  document.getElementById('endpoint').value = d.endpoint || '';
-  document.getElementById('api_key').value = d.has_key ? '••••••' : '';
-  document.getElementById('model').value = d.model || '';
-  applyProvider();
+  try {
+    const r = await fetch('/api/config', {cache:'no-store'});
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || 'Could not load configuration');
+    document.getElementById('endpoint').value = d.endpoint || 'http://127.0.0.1:11434/v1';
+    document.getElementById('api_key').value = d.has_key ? '••••••' : '';
+    document.getElementById('model').value = d.model || 'gptoss-20b';
+  } catch (e) { msg('Could not load settings: ' + e.message, false); }
 }
 function body() {
   return {
-    provider: document.getElementById('provider').value,
     endpoint: document.getElementById('endpoint').value,
     api_key: document.getElementById('api_key').value,
     model: document.getElementById('model').value
@@ -1527,14 +1579,22 @@ function body() {
 }
 document.getElementById('test').onclick = async () => {
   msg('Testing...', true);
-  const r = await fetch('/api/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body()) });
-  const d = await r.json();
-  msg(d.message || (d.ok ? 'Connected' : 'Failed'), !!d.ok);
+  try { const r = await fetch('/api/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body()) });
+    const d = await r.json(); msg(d.message || (d.ok ? 'Connected' : 'Failed'), !!r.ok && !!d.ok);
+  } catch (e) { msg('Connection test failed: ' + e.message, false); }
 };
 document.getElementById('save').onclick = async () => {
-  const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body()) });
-  const d = await r.json();
-  msg(d.message || (d.ok ? 'Saved' : 'Save failed'), !!d.ok);
+  const save = document.getElementById('save');
+  const values = body();
+  if (!values.endpoint.trim() || !values.model.trim()) { msg('Endpoint and model name are required.', false); return; }
+  save.disabled = true; msg('Saving...', true);
+  try {
+    const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(values) });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || 'Save failed');
+    msg('Saved model ' + d.model + '.', true);
+  } catch (e) { msg('Save failed: ' + e.message, false); }
+  finally { save.disabled = false; }
 };
 load();
 </script>
@@ -1579,19 +1639,11 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/config":
             cfg = dm.get_ai_config()
-            provider = (cfg.get("provider") or "gemini").lower()
-            env_key = reload_gemini_key_from_env()
-            has_key = bool(env_key) if provider == "gemini" else bool(cfg.get("api_key"))
-            endpoint = GEMINI_ENDPOINT if provider == "gemini" else cfg.get("endpoint", "")
-            model = cfg.get("model") or (GEMINI_DEFAULT_MODEL if provider == "gemini" else "")
             self._json(200, {
                 "ok": True,
-                "provider": provider,
-                "endpoint": endpoint,
-                "model": model,
-                "has_key": has_key,
-                "key_source": "env" if provider == "gemini" and env_key else "saved",
-                "key_hint": _mask_key(env_key) if provider == "gemini" else "",
+                "endpoint": cfg.get("endpoint") or "http://127.0.0.1:11434/v1",
+                "model": cfg.get("model") or "gptoss-20b",
+                "has_key": bool(cfg.get("api_key")),
             })
             return
         self._json(404, {"ok": False, "message": "Not found"})
@@ -1614,18 +1666,18 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "message": "Invalid JSON"})
             return
         if path == "/api/config":
-            provider = (data.get("provider") or "gemini").lower()
-            dm.save_ai_config(
-                endpoint=data.get("endpoint", ""),
+            endpoint = (data.get("endpoint") or "").strip()
+            model = (data.get("model") or "").strip()
+            if not endpoint or not model:
+                self._json(400, {"ok": False, "message": "Endpoint and model name are required."})
+                return
+            cfg = dm.save_ai_config(
+                endpoint=endpoint,
                 api_key=data.get("api_key", ""),
-                model=data.get("model", ""),
-                provider=provider,
+                model=model,
+                provider="custom",
             )
-            if provider == "gemini":
-                message = "Gemini saved. The bot will use GEMINI_API_KEY from .env."
-            else:
-                message = "Provider saved. The bot will use this OpenAI-compatible API."
-            self._json(200, {"ok": True, "message": message})
+            self._json(200, {"ok": True, "message": "Local model settings saved.", "model": cfg["model"]})
             return
         if path == "/api/test":
             self._json(200, _test_ai_connection(data))
@@ -1634,32 +1686,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
 
 
 def _test_ai_connection(data: dict) -> dict:
-    cfg = dm.get_ai_config()
-    provider = (data.get("provider") or cfg.get("provider") or "gemini").strip().lower()
-    if provider == "gemini":
-        return _test_gemini_connection(data)
     return _test_openai_connection(data)
-
-
-def _test_gemini_connection(data: dict) -> dict:
-    api_key = resolve_gemini_key(data.get("api_key", ""))
-    if not api_key:
-        return {"ok": False, "message": "GEMINI_API_KEY is missing in .env"}
-    model = normalize_gemini_model(data.get("model") or dm.get_ai_config().get("model") or GEMINI_DEFAULT_MODEL)
-    try:
-        response = generate_gemini_content(
-            prompt="Reply with the word pong only.",
-            system_instruction="Reply with a single word.",
-            api_key=api_key,
-            model=model,
-        )
-        text = (getattr(response, "text", None) or "").strip()
-        return {
-            "ok": True,
-            "message": f"Gemini connected using .env key {_mask_key(api_key)}. Model {model} responded: {text or 'ok'}",
-        }
-    except Exception as e:
-        return {"ok": False, "message": f"Gemini connection failed: {e}"}
 
 
 def _test_openai_connection(data: dict) -> dict:
@@ -1668,7 +1695,7 @@ def _test_openai_connection(data: dict) -> dict:
     api_key = (data.get("api_key") or "").strip()
     if _is_masked_key(api_key):
         api_key = cfg.get("api_key") or ""
-    model = (data.get("model") or cfg.get("model") or "").strip() or "gpt-4o-mini"
+    model = (data.get("model") or cfg.get("model") or "").strip() or "gptoss-20b"
     url = _openai_chat_url(endpoint)
     if not url:
         return {"ok": False, "message": "Enter a custom API endpoint."}
@@ -1710,6 +1737,19 @@ def start_config_web_server():
 
 
 # ================= MAIN BOT START =================
+async def configure_command_menu(app):
+    await app.bot.set_my_commands([
+        BotCommand("start", "Start the bot"),
+        BotCommand("help", "Show available commands"),
+        BotCommand("pdf", "Get the uploaded document"),
+        BotCommand("document", "Get the uploaded document"),
+        BotCommand("details", "Get the uploaded document"),
+        BotCommand("panel", "Open admin controls"),
+        BotCommand("learn", "Teach Ishani (admin only)"),
+        BotCommand("stop", "Stop the bot (admin only)"),
+    ])
+
+
 if __name__ == "__main__":
     from telegram.request import HTTPXRequest
     
@@ -1720,7 +1760,7 @@ if __name__ == "__main__":
         pool_timeout=60
     )
     
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(request).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(request).post_init(configure_command_menu).build()
     
     # ===== COMMAND HANDLERS =====
     app.add_handler(CommandHandler("start", start_command))
@@ -1730,6 +1770,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("pdf", handle_pdf_request))
     app.add_handler(CommandHandler("document", handle_pdf_request))
     app.add_handler(CommandHandler("details", handle_pdf_request))
+    app.add_handler(CommandHandler("learn", learn_command))
     
     # ===== CALLBACK HANDLERS =====
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
@@ -1740,7 +1781,9 @@ if __name__ == "__main__":
         filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
         moderate_group,
     ), group=-1)
-    app.add_handler(MessageHandler(filters.Document.PDF, handle_document_upload))
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_document_upload))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_admin_learning), group=-2)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_broadcast), group=-1)
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
     # ===== MEMBER HANDLERS =====
