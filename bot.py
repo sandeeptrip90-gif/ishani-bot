@@ -5127,6 +5127,13 @@ def _start_dashboard() -> None:
         print("⚠️ Dashboard not started: Node.js or dashboard/ folder is missing.", flush=True)
         return
     next_bin = DASHBOARD_DIR / "node_modules" / "next" / "dist" / "bin" / "next"
+    print(
+        f"🧩 Dashboard source check: {DASHBOARD_DIR} "
+        f"(app={(DASHBOARD_DIR / 'app').exists()}, "
+        f"components={(DASHBOARD_DIR / 'components').exists()}, "
+        f"lib={(DASHBOARD_DIR / 'lib').exists()})",
+        flush=True,
+    )
     try:
         if not next_bin.exists():
             npm = shutil.which("npm")
