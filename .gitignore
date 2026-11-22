@@ -1,0 +1,22 @@
+# Secrets
+.env
+*.env
+
+# Runtime data and private histories
+data.json
+chats/
+backup/
+generated/
+*.log
+*.tmp
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Dashboard build artifacts
+dashboard/node_modules/
+dashboard/.next/
+
