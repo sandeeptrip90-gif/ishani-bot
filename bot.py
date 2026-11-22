@@ -91,6 +91,34 @@ def _mask_key(value: str) -> str:
     return key[:4] + "…" + key[-4:]
 
 
+def _normalize_openai_endpoint(endpoint: str) -> str:
+    """Strip trailing slashes and collapse accidental '//v1' path typos.
+
+    The scheme's 'https://' is preserved by the negative lookbehind on ':'.
+    """
+    url = (endpoint or "").strip().rstrip("/")
+    if not url:
+        return ""
+    return re.sub(r"(?<!:)/{2,}", "/", url)
+
+
+def _default_ai_config() -> Dict[str, Any]:
+    """AI defaults, seeded from env so ephemeral hosts survive a redeploy.
+
+    Render's free tier starts each deploy with a fresh data.json. Setting
+    ISHANI_AI_ENDPOINT / ISHANI_AI_MODEL in the service environment keeps the
+    configured model alive without committing any credential to git.
+    """
+    endpoint = _normalize_openai_endpoint(os.environ.get("ISHANI_AI_ENDPOINT") or "")
+    model = (os.environ.get("ISHANI_AI_MODEL") or "").strip()
+    return {
+        "provider": "custom",
+        "endpoint": endpoint or "http://127.0.0.1:11434/v1",
+        "api_key": "123",
+        "model": model or "gptoss-20b",
+    }
+
+
 # ================= JSON MEMORY SYSTEM =================
 class DataManager:
     """Handle all JSON file operations for persistent storage"""
@@ -130,12 +158,7 @@ class DataManager:
                 "total_users": 0,
                 "total_broadcasts": 0
             },
-            "ai_config": {
-                "provider": "custom",
-                "endpoint": "http://127.0.0.1:11434/v1",
-                "api_key": "123",
-                "model": "gptoss-20b"
-            }
+            "ai_config": _default_ai_config()
         }
     
     def _atomic_write(self, path: Path, payload: Dict[str, Any]) -> bool:
@@ -531,12 +554,7 @@ class DataManager:
 
     def get_ai_config(self) -> Dict[str, Any]:
         """Local OpenAI-compatible model settings."""
-        defaults = {
-            "provider": "custom",
-            "endpoint": "http://127.0.0.1:11434/v1",
-            "api_key": "123",
-            "model": "gptoss-20b"
-        }
+        defaults = _default_ai_config()
         stored = self.data.get("ai_config") or {}
         merged = {**defaults, **stored}
         merged["provider"] = "custom"
@@ -894,17 +912,6 @@ async def get_cached_response_api(prompt: str, system_instruction: Optional[str]
 # Remember which transport actually works for an endpoint so we stop paying for
 # a failed /api/chat probe on every single request to an OpenAI-compatible host.
 _TRANSPORT_CACHE: Dict[str, str] = {}
-
-
-def _normalize_openai_endpoint(endpoint: str) -> str:
-    """Strip trailing slashes and collapse accidental '//v1' path typos.
-
-    The scheme's 'https://' is preserved by the negative lookbehind on ':'.
-    """
-    url = (endpoint or "").strip().rstrip("/")
-    if not url:
-        return ""
-    return re.sub(r"(?<!:)/{2,}", "/", url)
 
 
 def _openai_chat_url(endpoint: str) -> str:
