@@ -5135,13 +5135,22 @@ def _start_dashboard() -> None:
         flush=True,
     )
     try:
+        npm = shutil.which("npm")
+        if not npm:
+            print("⚠️ Dashboard not started: npm is missing (run npm install in dashboard/).", flush=True)
+            return
+        # Always reconcile dependencies: a previous production-only install may
+        # have left node_modules without typescript/@types even though next exists.
+        print("📦 Ensuring dashboard dependencies (including dev tools)…", flush=True)
+        install_env = os.environ.copy()
+        install_env.pop("NODE_ENV", None)
+        subprocess.run(
+            [npm, "install", "--include=dev"],
+            cwd=str(DASHBOARD_DIR), env=install_env, check=True, timeout=600,
+        )
         if not next_bin.exists():
-            npm = shutil.which("npm")
-            if not npm:
-                print("⚠️ Dashboard not started: npm is missing (run npm install in dashboard/).", flush=True)
-                return
-            print("📦 Installing dashboard dependencies (first run)…", flush=True)
-            subprocess.run([npm, "install"], cwd=str(DASHBOARD_DIR), check=True, timeout=600)
+            print("⚠️ Dashboard not started: next binary missing after install.", flush=True)
+            return
         if not (DASHBOARD_DIR / ".next" / "BUILD_ID").exists():
             print("🔨 Building dashboard (first run)…", flush=True)
             subprocess.run([node, str(next_bin), "build"], cwd=str(DASHBOARD_DIR), check=True, timeout=600)
