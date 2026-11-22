@@ -2729,7 +2729,10 @@ async def moderate_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise ApplicationHandlerStop
 
     if is_admin:
-        raise ApplicationHandlerStop
+        # Admins may post links/buttons. Never delete their posts and, crucially,
+        # do not stop the handler chain: the chat and broadcast handlers run in
+        # later groups and need to see admin messages too.
+        return
     if _message_has_fraud_claim(message):
         await _contain_group_message(update, context, user, chat, "Fraud claim")
         raise ApplicationHandlerStop
@@ -4650,9 +4653,9 @@ async def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
     replied = msg.reply_to_message
     if replied and getattr(replied, "from_user", None) and replied.from_user.id == getattr(bot, "id", None):
         return True
-    if user.id == ADMIN_ID or await _is_group_admin(chat, user.id):
-        return False
-
+    # Admins are participants too. Silencing every admin here made the bot look
+    # dead for the owner while still answering other members. The group mode
+    # below applies equally to admins; "mentions" still requires @bot or a reply.
     mode = GROUP_MODE
     override = str(dm.get_group_settings(chat.id).get("group_mode") or "").lower()
     if override in ("all", "mentions"):
