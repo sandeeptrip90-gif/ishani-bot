@@ -1,141 +1,55 @@
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = "8370426748:AAEO3Eyv_K99fGOZh33PvIG1uR5re-O3dmU"
-GEMINI_API_KEY = "AIzaSyBq2EVCJLmzo-L5aWTAM2OWU-Puw5QUyHM"
 
+COMPANY_KNOWLEDGE = """Chelsea Football: Complete Company Knowledge Base
 
+1. Platform Overview & Mission:
+- Chelsea Football ek sports prediction aur live match earning platform hai, jiska goal users ko simple aur transparent tareeke se daily financial growth dena hai.
+- Yahan users ko bina kisi complicated analysis ke accurate match predictions follow karke stable daily profit kamane ka mauka milta hai.
+- Supported Leagues: Premier League, UEFA Champions League, La Liga, Serie A, Bundesliga, aur Ligue 1 jaise major football tournaments available hain.
 
+2. Daily Profit & Earning Structure:
+- Daily Prediction Return: Har din live matches par predictions follow karke 3% se 5% tak ka daily profit milta hai.
+- Example (₹1,000 Investment): Agar aap ₹1,000 se start karte hain, to daily 3% se 5% ke hisaab se rozana ₹30 se ₹50 tak ka profit earn kar sakte hain.
+- Compounding Benefit: Agar aap apna daily profit withdraw karne ke bajaye reinvest karte hain, to aapka balance aur daily return aur tezi se grow hota hai.
 
-COMPANY_KNOWLEDGE = """
-Bharat Goal:- is a modern, innovative, and skill-based football platform designed specially for Indian football lovers. It is not just an application, but a complete digital ecosystem where passion for football meets smart thinking, community interaction, and exciting opportunities. Bharat Goal focuses on building a strong football community in India, where users can enjoy football, improve their understanding of the game, and grow through their performance and engagement.
+3. Bonuses & Referral Rewards:
+- Every Deposit Bonus (6%): Har baar deposit karne par aapko turant 6% extra deposit bonus milta hai (Example: ₹1,000 deposit par ₹60 extra bonus).
+- Direct Referral Reward (8%): Jab aap kisi dost ko refer karte hain, to aapko turant 8% referral reward bonus milta hai (Example: ₹1,000 par ₹80 direct bonus).
 
-At Bharat Goal, football is more than just watching matches. It is about participation, knowledge, prediction skills, teamwork, and smart play. The platform allows users to connect with like-minded football fans, challenge themselves daily, and stay engaged with football in a fun and interactive way. The idea behind Bharat Goal is simple: make football more engaging, more social, and more rewarding for Indian users.
+4. 6-Level Team Passive Income (Total 15% Commission):
+Jab aapki team platform par active rehti hai aur earn karti hai, to aapko 6 levels tak passive commission milta hai:
+- Level 1 (Direct Team): 7% commission
+- Level 2: 3% commission
+- Level 3: 2% commission
+- Level 4: 1% commission
+- Level 5: 1% commission
+- Level 6: 1% commission
+- Total Team Income: Sabhi 6 levels milakar total 15% tak passive team income banti hai.
 
-One of the main features of Bharat Goal is Daily Match Prediction. Users can participate in daily football match predictions based on their understanding of teams, players, and match conditions. This is a skill-based activity that encourages users to analyze games and apply their football knowledge. Over time, this helps users become more confident and smarter in understanding football strategies and match dynamics.
+5. Deposit, Withdrawal & Payment Methods:
+- Minimum Deposit: Sirf ₹200 se shuruat kar sakte hain (Presets: ₹200, ₹500, ₹1,000, ₹5,000).
+- Minimum Withdrawal: Wallet me ₹500 hote hi aap withdrawal request laga sakte hain (Presets: ₹500, ₹1,000, ₹2,000, ₹5,000).
+- Supported Deposit Methods: UPI, PhonePe, Google Pay (GPay), aur Paytm.
+- Supported Withdrawal Methods: Bank Transfer, UPI, aur USDT (Crypto).
+- Processing Speed: Safe & secure payment gateway ke saath fast transactions aur instant processing milti hai.
 
-Bharat Goal also offers a Personalized Profile for every user. Each user gets their own dashboard where they can track their performance, history of predictions, rewards earned, and overall progress. This personalized experience gives users motivation to improve themselves and perform better every day. It creates a sense of achievement and progress, which is important for long-term engagement.
+6. Key Highlights & Trust Factors:
+- Low Entry Barrier: Chhote amount (₹200) se start karke koi bhi user system ko pehle khud test aur verify kar sakta hai.
+- No Prior Football Knowledge Needed: Bas platform ki shared match predictions ko follow karna hota hai.
+- Multi-Source Earning: Self-trading profit (3–5% daily), deposit bonus (6%), direct referral bonus (8%), aur 6-level team income (15%) ek hi platform par milte hain.
 
-Another powerful feature of Bharat Goal is its Reward and Recognition System. Users are appreciated for their activity, consistency, and performance. Rewards, badges, and achievements are designed to motivate users and make their journey more exciting. Recognition makes users feel valued and increases their confidence. It also builds healthy competition among users, which strengthens the community.
+7. Official Links & Handling Examples:
+- Join / Signup Link: [Insert Signup Link]
+- Official Telegram Group: [Insert Telegram Group Link]
 
-Bharat Goal is designed to be simple and user-friendly. The registration process is quick and easy. Even a new user can understand the platform without any difficulty. The interface is clean, smooth, and visually attractive, mainly using a blue theme that represents trust, professionalism, and technology. The overall design of Bharat Goal creates a feeling of safety and reliability.
-
-Community building is one of the strongest pillars of Bharat Goal. Users can invite their friends and grow together. When users bring their friends to the platform, it creates a strong network where everyone supports and motivates each other. This community environment makes Bharat Goal different from normal football platforms. Here, football becomes a shared experience.
-
-Bharat Goal also offers an attractive Referral and Level Income system, which is fully transparent and easy to understand. The platform provides income based on three levels:
-
-* Level 1: 4%
-* Level 2: 2%
-* Level 3: 1%
-
-This makes a total of 7% referral income.
-
-Example:
-If your friend earns ₹1000:
-
-* Level 1: 4% of ₹1000 = ₹40
-* Level 2: 2% of ₹1000 = ₹20
-* Level 3: 1% of ₹1000 = ₹10
-
-So in total, you can earn ₹70 through the three-level structure.
-This system motivates users to invite genuine and active users to the platform and grow a strong network. It is based on teamwork and community support rather than individual profit thinking.
-
-Bharat Goal also introduces special bonuses such as:
-
-* First Recharge 5% Reward
-  When a user makes their first recharge, they get a special reward as a welcome benefit. This builds excitement and gives users a positive start on the platform.
-
-* Referral 6% Reward
-  When users refer their friends for the first time, they get an additional reward. This encourages users to share Bharat Goal with their circle and grow the community faster.
-
-These rewards are designed to increase engagement, build loyalty, and make users feel appreciated from the beginning.
-
-The Wallet System of Bharat Goal is fast, secure, and transparent. Users can manage their balance easily inside the app. Every transaction is processed carefully to ensure safety and accuracy. The wallet experience is smooth and simple, which increases trust in the platform.
-
-Bharat Goal follows a user-friendly and attractive Terms & Conditions structure that focuses on clarity and safety:
-
-* 24×7 Withdrawal Available
-  Users can request withdrawal anytime, which gives them full control and flexibility.
-
-* Fast & Secure Withdrawal System
-  The platform uses a safe and reliable process to ensure user security.
-
-* Minimum Deposit: ₹500
-  Users can start with a small and comfortable amount.
-
-* Minimum Withdrawal: ₹600
-  This is set to maintain smooth transaction processing.
-
-* Monthly 4 Withdrawal Limits
-  This helps maintain system stability and fast performance for all users.
-
-* Saturday & Sunday Withdrawal Off
-  This is for system maintenance and improving user experience. It ensures better performance and long-term platform reliability.
-
-All these conditions are designed in a positive way to protect users and maintain platform quality.
-
-Bharat Goal strongly believes in transparency. There are no hidden rules or confusing policies. Everything is designed in a simple language so that users can understand easily. This builds long-term trust and confidence in the brand.
-
-One of the unique qualities of Bharat Goal is its psychology-driven design. The platform is created in a way that motivates users, builds confidence, and encourages consistency. Small achievements, progress tracking, rewards, and community interaction make users feel successful and valued. This emotional connection helps Bharat Goal grow faster and stronger.
-
-The blue theme used in Bharat Goal represents:
-
-* Trust
-* Technology
-* Stability
-* Professionalism
-* Growth
-
-This color choice makes users feel safe and comfortable while using the platform.
-
-Bharat Goal is also focused on education. It improves football understanding among users. People learn about team performance, match analysis, and game strategies. This transforms casual football fans into smart football thinkers.
-
-The platform is suitable for:
-
-* Students
-* Football lovers
-* Sports enthusiasts
-* People who enjoy smart challenges
-* Community builders
-
-It is a place where fun meets learning.
-
-Bharat Goal is not about luck or shortcuts. It is about:
-
-* Smart thinking
-* Skill development
-* Community growth
-* Discipline
-* Consistency
-
-This makes it different from platforms that depend only on chance.
-
-The long-term vision of Bharat Goal is to become India’s most trusted football engagement platform. It aims to create a strong digital football culture where users feel proud to be part of the Bharat Goal family.
-
-In the future, Bharat Goal can expand with:
-
-* Live match features
-* More interactive challenges
-* Advanced performance analytics
-* National football events
-* User ranking systems
-* Exclusive tournaments
-
-These additions will make Bharat Goal even stronger and more attractive.
-
-Bharat Goal is not just a platform. It is a movement to unite Indian football fans. It builds identity, confidence, and excitement around football. It makes users feel that they are part of something big and meaningful.
-
-In simple words:
-
-Bharat Goal =
-Football + Skill + Community + Growth + Smart Play
-
-It is a platform where users:
-
-* Play smart
-* Think smart
-* Grow smart
-* And enjoy football in a new digital way
-
-Bharat Goal represents a future where football lovers are not just spectators but active participants in a growing digital football culture in India.
+Sample Q&A Handling for Assistant (Ishani):
+- User: "Ishani, ye Chelsea Football kya hai aur ismein risk toh nahi?"
+  Ishani: "Chelsea Football ek sports prediction platform hai jahan aap ₹200 se start karke system khud test kar sakte hain. Transactions safe aur secure hain, aur daily prediction follow karke profit milta hai."
+- User: "Profit kaise hota hai?"
+  Ishani: "Simple hai dost! Live matches par daily predictions follow karke 3% se 5% tak profit milta hai. Iske alawa har deposit par 6% bonus aur referral par 8% reward alag se milta hai."
+- User: "Team banane ka kya fayda?"
+  Ishani: "Team banane se aapko 6 levels tak total 15% passive commission milta hai (Level 1 par 7%, Level 2 par 3%, Level 3 par 2%, aur Level 4–6 par 1% each). Team jitni grow karegi, aapki passive income utni badhegi."
 """
 
 FRIENDLY_SYSTEM_PROMPT = """
