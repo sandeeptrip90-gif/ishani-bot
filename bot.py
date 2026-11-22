@@ -5135,24 +5135,28 @@ def _start_dashboard() -> None:
         flush=True,
     )
     try:
-        npm = shutil.which("npm")
-        if not npm:
-            print("⚠️ Dashboard not started: npm is missing (run npm install in dashboard/).", flush=True)
-            return
-        # Always reconcile dependencies: a previous production-only install may
-        # have left node_modules without typescript/@types even though next exists.
-        print("📦 Ensuring dashboard dependencies (including dev tools)…", flush=True)
-        install_env = os.environ.copy()
-        install_env.pop("NODE_ENV", None)
-        subprocess.run(
-            [npm, "install", "--include=dev"],
-            cwd=str(DASHBOARD_DIR), env=install_env, check=True, timeout=600,
-        )
+        # Render's build command already installs deps and builds .next. Reusing
+        # them matters: running `next build` next to the Python bot on a 512 MB
+        # instance gets OOM-killed during TypeScript checking.
+        build_ready = (DASHBOARD_DIR / ".next" / "BUILD_ID").exists()
+        deps_ready = next_bin.exists() and (DASHBOARD_DIR / "node_modules" / "typescript").exists()
+        if not deps_ready:
+            npm = shutil.which("npm")
+            if not npm:
+                print("⚠️ Dashboard not started: npm is missing (run npm install in dashboard/).", flush=True)
+                return
+            print("📦 Installing dashboard dependencies (including dev tools)…", flush=True)
+            install_env = os.environ.copy()
+            install_env.pop("NODE_ENV", None)
+            subprocess.run(
+                [npm, "install", "--include=dev"],
+                cwd=str(DASHBOARD_DIR), env=install_env, check=True, timeout=600,
+            )
         if not next_bin.exists():
             print("⚠️ Dashboard not started: next binary missing after install.", flush=True)
             return
-        if not (DASHBOARD_DIR / ".next" / "BUILD_ID").exists():
-            print("🔨 Building dashboard (first run)…", flush=True)
+        if not build_ready and not (DASHBOARD_DIR / ".next" / "BUILD_ID").exists():
+            print("🔨 Building dashboard (local fallback)…", flush=True)
             subprocess.run([node, str(next_bin), "build"], cwd=str(DASHBOARD_DIR), check=True, timeout=600)
         env = os.environ.copy()
         env["API_BACKEND_URL"] = f"http://127.0.0.1:{WEB_PORT}"
