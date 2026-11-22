@@ -12,6 +12,10 @@ const nextConfig = {
     config.resolve.alias["@"] = dashboardDir;
     return config;
   },
+  // The dashboard lives at "/"; keep the bookmarked /dashboard URL working.
+  async redirects() {
+    return [{ source: "/dashboard", destination: "/", permanent: false }];
+  },
   // /api/* is handled by app/api/[...path]/route.ts at runtime so
   // API_BACKEND_URL is read from the actual bot-launched process.
 };

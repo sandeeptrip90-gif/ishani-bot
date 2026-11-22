@@ -540,24 +540,28 @@ class DataManager:
         stored = self.data.get("ai_config") or {}
         merged = {**defaults, **stored}
         merged["provider"] = "custom"
-        if not merged.get("endpoint") or "generativelanguage.googleapis.com" in merged["endpoint"]:
+        merged["endpoint"] = _normalize_openai_endpoint(str(merged.get("endpoint") or ""))
+        if not merged["endpoint"] or "generativelanguage.googleapis.com" in merged["endpoint"]:
             merged["endpoint"] = defaults["endpoint"]
             merged["api_key"] = defaults["api_key"]
-        model_name = str(merged.get("model") or "").strip().lower()
-        legacy_model = re.sub(r"[^a-z0-9]+", "", model_name)
-        replaced_legacy_model = False
-        if not model_name or "qwen" in legacy_model or "gemini" in legacy_model:
-            merged["model"] = defaults["model"]
-            replaced_legacy_model = True
+        # Keep the exact model name the master saved. Never rewrite a name just
+        # because it contains "qwen"/"gemini": local OpenAI-compatible servers
+        # (llama.cpp, Ollama, vLLM) use those names and the previous rewrite
+        # silently reverted them to the default on every config read.
+        model_name = str(merged.get("model") or "").strip()
+        if not model_name:
+            model_name = defaults["model"]
+        merged["model"] = model_name
         self.data["ai_config"] = merged
-        if replaced_legacy_model:
+        if (model_name != str(stored.get("model") or "").strip()
+                or merged["endpoint"] != str(stored.get("endpoint") or "").strip()):
             self.save()
         return merged
 
     def save_ai_config(self, endpoint: str, api_key: str, model: str, provider: str = "custom"):
         current = self.get_ai_config()
         current["provider"] = "custom"
-        current["endpoint"] = (endpoint or "").strip()
+        current["endpoint"] = _normalize_openai_endpoint(endpoint)
         if api_key and api_key.strip() and not _is_masked_key(api_key):
             current["api_key"] = api_key.strip()
         current["model"] = (model or "").strip()
@@ -892,8 +896,19 @@ async def get_cached_response_api(prompt: str, system_instruction: Optional[str]
 _TRANSPORT_CACHE: Dict[str, str] = {}
 
 
-def _openai_chat_url(endpoint: str) -> str:
+def _normalize_openai_endpoint(endpoint: str) -> str:
+    """Strip trailing slashes and collapse accidental '//v1' path typos.
+
+    The scheme's 'https://' is preserved by the negative lookbehind on ':'.
+    """
     url = (endpoint or "").strip().rstrip("/")
+    if not url:
+        return ""
+    return re.sub(r"(?<!:)/{2,}", "/", url)
+
+
+def _openai_chat_url(endpoint: str) -> str:
+    url = _normalize_openai_endpoint(endpoint)
     if not url:
         return ""
     if url.endswith("/chat/completions"):
