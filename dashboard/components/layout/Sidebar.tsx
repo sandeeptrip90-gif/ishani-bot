@@ -8,6 +8,7 @@ export const navItems: Array<{ href: string; label: string; icon: IconName; mast
   { href: "/", label: "Dashboard", icon: "home" },
   { href: "/groups", label: "Groups", icon: "groups" },
   { href: "/owners", label: "Owners", icon: "owners" },
+  { href: "/users", label: "Users & Memory", icon: "users", masterOnly: true },
   { href: "/broadcasts", label: "Broadcasts", icon: "broadcast" },
   { href: "/ai-chats", label: "AI Chats", icon: "chat" },
   { href: "/tasks", label: "Tasks", icon: "tasks" },

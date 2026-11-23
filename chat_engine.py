@@ -88,7 +88,11 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
 
     # Snapshot first: the document must show the context the model actually saw,
     # not the user message we are about to append.
-    history = b.dm.recent_chat(user_id, first_name, limit=40, scope=chat_scope)
+    history = b.dm.recent_chat(
+        user_id, first_name,
+        limit=b.dm.history_limit_for(user_id, 40),
+        scope=chat_scope,
+    )
     b.dm.append_chat(user_id, first_name, "user", user_text, scope=chat_scope)
 
     def _log_turn(*, reply: str, raw_reply: str = "", response_kind: str = "ai",

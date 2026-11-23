@@ -15,6 +15,7 @@ Features:
 import ast
 import asyncio
 import base64
+import copy
 import hashlib
 import hmac
 import html
@@ -43,6 +44,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 import httpx
 from dotenv import load_dotenv
 import mongo_logger
+import mongo_store
 try:
     from telethon import TelegramClient, events
     from telethon.sessions import StringSession
@@ -152,20 +154,26 @@ class DataManager:
         self.data = self._load_data()
     
     def _load_data(self) -> Dict[str, Any]:
-        """Load data from JSON file, create if doesn't exist"""
+        """Load runtime state from Mongo first, seeding it from JSON once."""
         with self._lock:
+            if mongo_store.enabled():
+                remote = mongo_store.load_state(mongo_store.DATA_JSON_KEY)
+                if isinstance(remote, dict):
+                    return remote
             if self.file_path.exists():
                 try:
                     with open(self.file_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
+                        data = json.load(f)
                 except Exception as e:
                     print(f"❌ Error loading JSON: {e}")
-                    return self._default_data()
+                    data = self._default_data()
             else:
                 print(f"📝 Creating new data file: {self.file_path}")
-                default = self._default_data()
-                self._save_data(default)
-                return default
+                data = self._default_data()
+                self._save_data(data)
+            if mongo_store.enabled() and isinstance(data, dict):
+                mongo_store.save_state(mongo_store.DATA_JSON_KEY, data)
+            return data
     
     @staticmethod
     def _default_data() -> Dict[str, Any]:
@@ -210,7 +218,9 @@ class DataManager:
         self._atomic_write(self.file_path, data)
     
     def save(self):
-        """Save current data"""
+        """Save current state. Mongo is primary; JSON stays as a local mirror."""
+        if mongo_store.enabled():
+            mongo_store.save_state(mongo_store.DATA_JSON_KEY, self.data)
         self._save_data(self.data)
     
     def get_cached_response(self, prompt: str) -> Optional[str]:
@@ -232,13 +242,83 @@ class DataManager:
                 "user_id": user_id,
                 "first_name": first_name,
                 "message_count": 0,
-                "last_seen": None
+                "last_seen": None,
+                "full_memory": False,
+                "full_memory_since": None,
+                "full_memory_by": None,
             }
         
         self.data["users"][user_key]["message_count"] += 1
         self.data["users"][user_key]["last_seen"] = datetime.now().isoformat()
         self.data["stats"]["total_messages"] += 1
         self.save()
+
+    def is_full_memory(self, user_id: int) -> bool:
+        """True for users granted dedicated remember-everything mode."""
+        record = (self.data.get("users") or {}).get(str(user_id)) or {}
+        return bool(record.get("full_memory"))
+
+    def history_limit_for(self, user_id: int, base_limit: int = 40) -> int:
+        """Trusted users get an expanded memory window; others keep the old cap."""
+        return 240 if self.is_full_memory(user_id) else int(base_limit)
+
+    def set_full_memory(self, user_id: int, enabled: bool, actor_id: Any = None) -> Dict[str, Any]:
+        """Grant or revoke full-memory mode. This never grants admin powers."""
+        user_key = str(int(user_id))
+        with self._lock:
+            users = self.data.setdefault("users", {})
+            record = users.get(user_key)
+            if not isinstance(record, dict):
+                record = {
+                    "user_id": int(user_id),
+                    "first_name": "",
+                    "message_count": 0,
+                    "last_seen": None,
+                }
+                users[user_key] = record
+            record["full_memory"] = bool(enabled)
+            if enabled:
+                record["full_memory_since"] = datetime.now().isoformat(timespec="seconds")
+                record["full_memory_by"] = actor_id if isinstance(actor_id, (int, str)) else str(actor_id)
+            else:
+                record["full_memory_since"] = None
+                record["full_memory_by"] = None
+            self.audit(
+                "full_memory_toggle",
+                actor_id if isinstance(actor_id, (int, str)) else str(actor_id),
+                f"user:{user_id}",
+                f"enabled={bool(enabled)}",
+            )
+            return record
+
+    def user_directory(self) -> List[Dict[str, Any]]:
+        """Dashboard-facing user list, newest/most active first."""
+        users: List[Dict[str, Any]] = []
+        for key, record in (self.data.get("users") or {}).items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                user_id = int(record.get("user_id") or key)
+            except (TypeError, ValueError):
+                continue
+            role = "master" if user_id == ADMIN_ID else (self.owner_role(user_id) or "user")
+            if record.get("full_memory") and role == "user":
+                role = "full-memory"
+            users.append({
+                "user_id": user_id,
+                "first_name": str(record.get("first_name") or ""),
+                "username": str(record.get("username") or ""),
+                "message_count": int(record.get("message_count") or 0),
+                "last_seen": record.get("last_seen"),
+                "full_memory": bool(record.get("full_memory")),
+                "full_memory_since": record.get("full_memory_since"),
+                "full_memory_by": record.get("full_memory_by"),
+                "chat_file": record.get("chat_file"),
+                "last_focus": record.get("last_focus"),
+                "role": role,
+            })
+        users.sort(key=lambda item: (item["full_memory"], item["message_count"]), reverse=True)
+        return users
     
     def set_pdf_file_id(self, file_id: str):
         """Store PDF file_id"""
@@ -614,9 +694,10 @@ class DataManager:
         cfg = self.get_ai_config()
         return bool(cfg.get("endpoint") and cfg.get("api_key"))
 
-    # ----- per-user chat history (chats/<user_id>.json, date sections) -----
+    # ----- per-user chat history (Mongo primary, chats/<user_id>.json mirror) -----
     CHAT_DIR = Path("chats")
     MAX_CHAT_MESSAGES = 80
+    FULL_MEMORY_MIRROR_MESSAGES = 5000
 
     def _chat_file(self, user_id: int) -> Path:
         user_id = self._valid_user_id(user_id)
@@ -637,35 +718,65 @@ class DataManager:
         return sections
 
     def load_chat(self, user_id: int, first_name: str = "User", scope: str = "private") -> Dict[str, Any]:
-        """Load one user's file. Personal memory is shared; conversation threads are scope-separated."""
+        """Load Mongo-primary memory; JSON is only the local crash mirror."""
         path = self._chat_file(user_id)
         with self._lock:
-            if path.exists():
+            data: Optional[Dict[str, Any]] = None
+            if mongo_store.enabled():
+                remote = mongo_store.load_state(mongo_store.chat_state_key(user_id))
+                if isinstance(remote, dict):
+                    data = copy.deepcopy(remote)
+            if data is None and path.exists():
                 try:
                     with path.open("r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict) and "sections" in data:
-                        conversations = data.get("conversations")
-                        if not isinstance(conversations, dict):
-                            conversations = data["conversations"] = {}
-                        conversations.setdefault("private", {"sections": data.get("sections") or {}})
-                        pref = ((data.get("memory") or {}).get("preferred_name") or "").strip()
-                        if pref:
-                            data["name"] = pref
-                        elif not data.get("name") and first_name:
-                            data["name"] = first_name
-                        data["telegram_name"] = first_name
-                        self._scope_sections(data, scope)
-                        return data
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
                 except Exception as e:
                     print(f"⚠️ Chat load error {user_id}: {e}")
-        return {
-            "user_id": int(user_id),
-            "name": first_name or "User",
-            "memory": {"about": "", "topics": [], "last_focus": "", "facts": []},
-            "sections": {},
-            "conversations": {scope: {"sections": {}}},
-        }
+            if not isinstance(data, dict):
+                return {
+                    "user_id": int(user_id),
+                    "name": first_name or "User",
+                    "memory": {"about": "", "topics": [], "last_focus": "", "facts": []},
+                    "sections": {},
+                    "conversations": {scope: {"sections": {}}},
+                }
+            if "sections" in data:
+                conversations = data.get("conversations")
+                if not isinstance(conversations, dict):
+                    conversations = data["conversations"] = {}
+                conversations.setdefault("private", {"sections": data.get("sections") or {}})
+            pref = ((data.get("memory") or {}).get("preferred_name") or "").strip()
+            if pref:
+                data["name"] = pref
+            elif not data.get("name") and first_name:
+                data["name"] = first_name
+            data["telegram_name"] = first_name
+            self._scope_sections(data, scope)
+            return data
+
+    @staticmethod
+    def _trim_chat_record(record: Dict[str, Any], limit: int) -> None:
+        """Cap a JSON-mirror copy. limit <= 0 keeps every message."""
+        conv = record.get("conversations")
+        if not isinstance(conv, dict):
+            return
+        for entry in conv.values():
+            if not isinstance(entry, dict):
+                continue
+            sections = entry.get("sections") or {}
+            flat: List[tuple] = []
+            for day in sorted(sections.keys()):
+                for msg in sections.get(day) or []:
+                    flat.append((day, msg))
+            if limit > 0 and len(flat) > limit:
+                trimmed: Dict[str, List] = {}
+                for day, msg in flat[-limit:]:
+                    trimmed.setdefault(day, []).append(msg)
+                entry["sections"] = trimmed
+        private_entry = conv.get("private") or {}
+        record["sections"] = private_entry.get("sections") or {}
 
     def save_chat(self, record: Dict[str, Any]):
         user_id = record.get("user_id")
@@ -677,23 +788,21 @@ class DataManager:
                 conv = record["conversations"] = {}
             if not conv:
                 conv["private"] = {"sections": record.get("sections") or {}}
-            for entry in conv.values():
-                if not isinstance(entry, dict):
-                    continue
-                sections = entry.get("sections") or {}
-                flat: List[tuple] = []
-                for day in sorted(sections.keys()):
-                    for msg in sections.get(day) or []:
-                        flat.append((day, msg))
-                if len(flat) > self.MAX_CHAT_MESSAGES:
-                    keep = flat[-self.MAX_CHAT_MESSAGES:]
-                    trimmed: Dict[str, List] = {}
-                    for day, msg in keep:
-                        trimmed.setdefault(day, []).append(msg)
-                    entry["sections"] = trimmed
             private_entry = conv.get("private") or {}
             record["sections"] = private_entry.get("sections") or {}
-            self._atomic_write(self._chat_file(user_id), record)
+
+            # Mongo keeps the complete trusted-user history; the JSON mirror is
+            # capped so a long-running local process never grows without bound.
+            mongo_payload = copy.deepcopy(record)
+            mirror = copy.deepcopy(record)
+            mirror_limit = (
+                self.FULL_MEMORY_MIRROR_MESSAGES if self.is_full_memory(user_id)
+                else self.MAX_CHAT_MESSAGES
+            )
+            self._trim_chat_record(mirror, mirror_limit)
+            if mongo_store.enabled():
+                mongo_store.save_state(mongo_store.chat_state_key(user_id), mongo_payload)
+            self._atomic_write(self._chat_file(user_id), mirror)
 
     def append_chat(self, user_id: int, first_name: str, role: str, text: str, scope: str = "private") -> Dict[str, Any]:
         with self._lock:
@@ -708,7 +817,7 @@ class DataManager:
                 "text": (text or "").strip()[:1500],
             })
             if role == "user":
-                self._refresh_memory(record, text or "")
+                self._refresh_memory(record, text or "", self.is_full_memory(user_id))
             self.save_chat(record)
             user_key = str(user_id)
             if user_key in self.data.get("users", {}):
@@ -726,11 +835,13 @@ class DataManager:
             sections = self._scope_sections(record, scope)
             for day in sorted(sections.keys()):
                 messages.extend(sections.get(day) or [])
-            return messages[-limit:]
+            return messages if limit <= 0 else messages[-limit:]
 
     @staticmethod
-    def _refresh_memory(record: Dict[str, Any], user_text: str):
+    def _refresh_memory(record: Dict[str, Any], user_text: str, full_memory: bool = False):
         mem = record.setdefault("memory", {"about": "", "topics": [], "last_focus": "", "preferred_name": "", "facts": []})
+        if full_memory:
+            mem["remember_everything"] = True
         text = (user_text or "").strip()
         mem["last_focus"] = text[:180]
         skip_topics = {
@@ -743,7 +854,8 @@ class DataManager:
             snippet = text[:90]
             if snippet.lower() not in low:
                 topics.append(snippet)
-            mem["topics"] = topics[-10:]
+            topic_cap = 200 if full_memory else 10
+            mem["topics"] = topics[-topic_cap:]
         name_hit = re.search(
             r"(?:mera\s+na+m(?:e)?|my\s+name\s+is)\s+(?:hai\s+)?([A-Za-z\u0900-\u097F]{2,24})",
             text,
@@ -797,7 +909,8 @@ class DataManager:
                 if fact.strip() and fact.casefold() not in known:
                     facts.append(fact)
                     known.add(fact.casefold())
-            mem["facts"] = facts[-20:]
+            fact_cap = 200 if full_memory else 20
+            mem["facts"] = facts[-fact_cap:]
 
 # Initialize data manager
 dm = DataManager("data.json")
@@ -1465,7 +1578,9 @@ PERSONA_LOCK = threading.RLock()
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> bool:
-    """Crash-safe JSON write shared by data.json, chats and persona.json."""
+    """Crash-safe JSON write, mirrored into Mongo when it is the state key."""
+    if path.name == "persona.json" and mongo_store.enabled():
+        mongo_store.save_state(mongo_store.PERSONA_JSON_KEY, payload)
     with PERSONA_LOCK:
         tmp = path.with_name(path.name + ".tmp")
         try:
@@ -1502,13 +1617,23 @@ MINIMAL_PERSONA: Dict[str, Any] = {
 
 
 def load_persona() -> Dict[str, Any]:
-    """Load persona.json; a bad edit falls back to its saved fallback block."""
-    try:
-        with PERSONA_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"⚠️ persona.json load error: {e}")
-        return dict(MINIMAL_PERSONA)
+    """Load Mongo-primary persona; a bad edit falls back to its saved block."""
+    data: Optional[Dict[str, Any]] = None
+    if mongo_store.enabled():
+        remote = mongo_store.load_state(mongo_store.PERSONA_JSON_KEY)
+        if isinstance(remote, dict):
+            data = remote
+    if data is None:
+        try:
+            with PERSONA_PATH.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+                if mongo_store.enabled():
+                    mongo_store.save_state(mongo_store.PERSONA_JSON_KEY, data)
+        except Exception as e:
+            print(f"⚠️ persona.json load error: {e}")
+            return dict(MINIMAL_PERSONA)
     if not isinstance(data, dict):
         return dict(MINIMAL_PERSONA)
     if not isinstance(data.get("master_prompt"), str) or not data["master_prompt"].strip():
@@ -2424,6 +2549,99 @@ async def web_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+
+# ========== FULL-MEMORY TRUSTED USERS ==========
+def _parse_memory_flag(value: Any) -> Optional[bool]:
+    text = str(value or "").strip().lower()
+    if text in {"on", "enable", "enabled", "true", "yes", "1"}:
+        return True
+    if text in {"off", "disable", "disabled", "false", "no", "0"}:
+        return False
+    return None
+
+
+async def full_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Master-only: make one user a full-memory trusted user (not an admin)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.effective_message.reply_text("❌ Master Owner only!")
+        return
+
+    args = list(context.args or [])
+    replied = update.effective_message.reply_to_message if update.effective_message else None
+    target_id: Optional[int] = None
+    enabled = True
+
+    if args:
+        first = args[0].strip()
+        first_flag = _parse_memory_flag(first)
+        if first_flag is not None and replied and replied.from_user and not replied.from_user.is_bot:
+            target_id = int(replied.from_user.id)
+            enabled = first_flag
+        else:
+            try:
+                target_id = int(first)
+            except (TypeError, ValueError):
+                target_id = None
+            if target_id is None:
+                await update.effective_message.reply_text(
+                    "Usage: <code>/fullmemory user_id [on|off]</code>\n"
+                    "Ya kisi ki message par reply karke <code>/fullmemory on</code> bhejein.",
+                    parse_mode="HTML",
+                )
+                return
+            if len(args) >= 2:
+                flag = _parse_memory_flag(args[1])
+                if flag is None:
+                    await update.effective_message.reply_text("❌ Use <code>on</code> ya <code>off</code>.", parse_mode="HTML")
+                    return
+                enabled = flag
+    elif replied and replied.from_user and not replied.from_user.is_bot:
+        target_id = int(replied.from_user.id)
+        enabled = True
+    else:
+        await update.effective_message.reply_text(
+            "Usage: <code>/fullmemory user_id [on|off]</code>\n"
+            "Ya kisi ki message par reply karke <code>/fullmemory on</code> bhejein.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not target_id or target_id <= 0:
+        await update.effective_message.reply_text("❌ Valid Telegram user ID chahiye.")
+        return
+
+    record = dm.set_full_memory(target_id, enabled, actor_id=update.effective_user.id)
+    display = str(record.get("first_name") or "").strip()
+    if not display and replied and replied.from_user:
+        display = str(replied.from_user.first_name or "")
+    display = display or str(target_id)
+    state = "ON" if enabled else "OFF"
+    extra = " Yaad rakhegi, personalized reply degi. Admin power nahi milta." if enabled else " Full-memory band kar diya."
+    await update.effective_message.reply_text(
+        f"✅ <b>{html.escape(display)}</b> ke liye full-memory <b>{state}</b>.{extra}",
+        parse_mode="HTML",
+    )
+
+
+async def memory_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Master-only list of users with dedicated full memory."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.effective_message.reply_text("❌ Master Owner only!")
+        return
+    users = [item for item in dm.user_directory() if item.get("full_memory")]
+    if not users:
+        await update.effective_message.reply_text("🧠 Abhi kisi ke liye full-memory ON nahi hai.")
+        return
+    lines = [f"<b>🧠 Full-memory users ({len(users)})</b>"]
+    for item in users[:50]:
+        name = html.escape(str(item.get("first_name") or item["user_id"]))
+        lines.append(
+            f"• {name} — <code>{item['user_id']}</code> | messages: {item['message_count']}"
+            f" | since: {html.escape(str(item.get('full_memory_since') or '-'))}"
+        )
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 # ========== FREE WEB SEARCH COMMAND ==========
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Explicit /search entry point. Uses the same free, rate-limited search core."""
@@ -2476,6 +2694,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /registergroup - Register the current group (owners only)\n"
         "• /mygroups - See only your own groups\n"
         "• /owners - List owners (master only)\n"
+        "• /fullmemory <code>user_id</code> [on|off] - Dedicated remember-everything mode (master only, memory only — no admin powers)\n"
+        "• /memoryusers - List full-memory trusted users (master only)\n"
         "• /verifygroup <code>group_id</code> - Verify a group (master only)\n"
         "• /webtoken - Get your scoped dashboard token (private chat)\n"
         "• Just ask in normal language: search the web, check group admin status, generate a script, or prepare a report. Broadcasts and destructive actions need approval.\n"
@@ -5761,6 +5981,54 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "message": str(e)[:300]})
 
+    def _api_users(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            users = dm.user_directory()
+            return self._json(200, {
+                "ok": True,
+                "role": session["role"],
+                "users": users,
+                "stats": {
+                    "total": len(users),
+                    "full_memory": sum(1 for item in users if item.get("full_memory")),
+                    "mongo_primary": mongo_store.enabled(),
+                },
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
+    def _api_mongo_overview(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            admin_ids = {int(ADMIN_ID)}
+            for key, record in (dm.data.get("owners") or {}).items():
+                if not isinstance(record, dict):
+                    continue
+                if not (record.get("accepted") or str(record.get("status") or "").lower() in {"accepted", "active"}
+                        or record.get("role")):
+                    continue
+                try:
+                    admin_ids.add(int(key))
+                except (TypeError, ValueError):
+                    continue
+            payload = mongo_logger.chat_overview(sorted(admin_ids))
+            payload["ok"] = True
+            payload["storage"] = {
+                "mongo_primary": mongo_store.enabled(),
+                "database": mongo_store.database_name(),
+                "chat_collection": mongo_logger._get_collection().name if mongo_logger.enabled() else
+                                   (os.environ.get("MONGODB_COLLECTION") or mongo_logger.DEFAULT_COLLECTION),
+                "state_collections": [mongo_store.state_collection_name()],
+            }
+            return self._json(200, payload)
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
     def _visible_scheduled(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
         items = dm.data.get("scheduled_messages") or []
         if not isinstance(items, list):
@@ -5868,6 +6136,10 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return self._api_overview()
         if path == "/api/owners":
             return self._api_owners()
+        if path == "/api/users":
+            return self._api_users()
+        if path == "/api/mongo/overview":
+            return self._api_mongo_overview()
         if path == "/api/schedule":
             return self._api_schedule()
         if path == "/api/ai/history":
@@ -6230,6 +6502,31 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         except Exception:
             self._json(400, {"ok": False, "message": "Invalid JSON"})
             return
+        if path == "/api/users/full-memory":
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            try:
+                user_id = int(data.get("user_id"))
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            if user_id <= 0:
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            raw_enabled = data.get("enabled")
+            if isinstance(raw_enabled, bool):
+                enabled = raw_enabled
+            else:
+                parsed = _parse_memory_flag(raw_enabled)
+                if parsed is None:
+                    return self._json(400, {"ok": False, "message": "enabled must be true or false."})
+                enabled = parsed
+            record = dm.set_full_memory(user_id, enabled, actor_id=session.get("user_id"))
+            return self._json(200, {
+                "ok": True,
+                "message": f"Full-memory {'enabled' if enabled else 'disabled'} for {user_id}.",
+                "user_id": user_id,
+                "enabled": bool(record.get("full_memory")),
+            })
         if path == "/api/config":
             session = self._auth()
             if not session or session["role"] != "master":
@@ -6547,6 +6844,8 @@ async def configure_command_menu(app):
         BotCommand("learn", "Teach Ishani (admin only)"),
         BotCommand("search", "Free web search (DuckDuckGo)"),
         BotCommand("assign", "Invite a Group Owner (master only)"),
+        BotCommand("fullmemory", "Full-memory trusted user (master only)"),
+        BotCommand("memoryusers", "List full-memory users (master only)"),
         BotCommand("mygroups", "See only your groups"),
         BotCommand("webtoken", "Get dashboard token (private)"),
         BotCommand("stop", "Stop the bot (admin only)"),
@@ -6589,6 +6888,7 @@ async def post_init(app):
     """Run startup hooks; python-telegram-bot accepts one post_init callback."""
     await capture_bot_app(app)
     await configure_command_menu(app)
+    mongo_store.seed_all(Path("."))
     refresh_prewritten()
     start_prewritten_refresh()
     if tg is not None:
@@ -6658,6 +6958,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("mygroups", my_groups_command))
     app.add_handler(CommandHandler("owners", owners_command))
     app.add_handler(CommandHandler("webtoken", web_token_command))
+    app.add_handler(CommandHandler("fullmemory", full_memory_command))
+    app.add_handler(CommandHandler("memoryusers", memory_users_command))
     
     # ===== CALLBACK HANDLERS =====
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))

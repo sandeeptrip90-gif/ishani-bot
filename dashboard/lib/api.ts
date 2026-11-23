@@ -53,6 +53,10 @@ export const api = {
   members: (id: number | string) => apiFetch<import("@/types").MembersPayload>(`/group/members?id=${encodeURIComponent(String(id))}`),
   activity: () => apiFetch<{ ok: boolean; entries: import("@/types").AuditEntry[] }>("/activity"),
   owners: () => apiFetch<{ ok: boolean; owners: import("@/types").OwnerEntry[]; invitations: import("@/types").InvitationEntry[] }>("/owners"),
+  users: () => apiFetch<import("@/types").UsersPayload>("/users"),
+  setFullMemory: (body: { user_id: number; enabled: boolean }) =>
+    apiFetch<import("@/types").FullMemoryResult>("/users/full-memory", { method: "POST", body }),
+  mongoOverview: () => apiFetch<import("@/types").MongoOverviewPayload>("/mongo/overview"),
   inviteOwner: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; token?: string; expires_at?: string; message?: string }>("/owners/invite", { method: "POST", body }),
   verifyGroup: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; message?: string }>("/owners/verify", { method: "POST", body }),
   schedule: () => apiFetch<{ ok: boolean; items: import("@/types").ScheduledItem[] }>("/schedule"),

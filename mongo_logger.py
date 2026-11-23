@@ -184,3 +184,102 @@ def ping() -> bool:
         return False
     collection.database.client.admin.command("ping")
     return True
+
+
+def _empty_overview() -> Dict[str, Any]:
+    empty_card = {"documents": 0, "unique_users": 0, "models": []}
+    return {
+        "cards": {"users": dict(empty_card), "ai_model": dict(empty_card), "admins": dict(empty_card)},
+        "recent": {"users": [], "ai_model": [], "admins": []},
+        "total_documents": 0,
+    }
+
+
+def _public_turn(document: Dict[str, Any]) -> Dict[str, Any]:
+    created = document.get("created_at")
+    if hasattr(created, "isoformat"):
+        created_text = created.isoformat()
+    else:
+        created_text = str(created or "")
+    return {
+        "id": str(document.get("_id") or ""),
+        "user_id": int(document.get("user_id") or 0),
+        "first_name": str(document.get("first_name") or ""),
+        "user_text": str(document.get("user_text") or ""),
+        "model_reply": str(document.get("model_reply") or ""),
+        "response_kind": str(document.get("response_kind") or ""),
+        "status": str(document.get("status") or ""),
+        "model": str(document.get("model") or ""),
+        "scope": str(document.get("scope") or ""),
+        "created_at": created_text,
+    }
+
+
+def chat_overview(admin_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    """Aggregate chat-log documents into user / AI model / admin cards."""
+    result = _empty_overview()
+    collection = _get_collection()
+    if collection is None:
+        return result
+
+    admins = [int(value) for value in (admin_ids or []) if isinstance(value, int) or str(value).isdigit()]
+    # Aggregation expressions (for $cond) and find filters (for recent lists)
+    # use different syntax, so keep both forms.
+    admin_condition = {"$in": ["$user_id", admins]} if admins else {"$eq": ["$user_id", -1]}
+    ai_condition = {"$in": ["$response_kind", ["ai", "ai_retry"]]}
+    admin_query = {"user_id": {"$in": admins}} if admins else {"user_id": -1}
+    ai_query = {"response_kind": {"$in": ["ai", "ai_retry"]}}
+    user_query = {"user_id": {"$nin": admins}} if admins else {"user_id": {"$ne": -1}}
+
+    projection = {
+        "_id": 1, "user_id": 1, "first_name": 1, "user_text": 1,
+        "model_reply": 1, "response_kind": 1, "status": 1,
+        "model": 1, "scope": 1, "created_at": 1,
+    }
+
+    def _recent(match: Dict[str, Any]) -> List[Dict[str, Any]]:
+        docs = list(collection.find(match, projection).sort("created_at", -1).limit(5))
+        return [_public_turn(doc) for doc in docs]
+
+    try:
+        pipeline = [{
+            "$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "user_docs": {"$sum": {"$cond": [admin_condition, 0, 1]}},
+                "admin_docs": {"$sum": {"$cond": [admin_condition, 1, 0]}},
+                "ai_docs": {"$sum": {"$cond": [ai_condition, 1, 0]}},
+                "user_ids": {"$addToSet": {"$cond": [admin_condition, None, "$user_id"]}},
+                "admin_ids": {"$addToSet": {"$cond": [admin_condition, "$user_id", None]}},
+                "ai_ids": {"$addToSet": {"$cond": [ai_condition, "$user_id", None]}},
+                "user_models": {"$addToSet": {"$cond": [admin_condition, None, "$model"]}},
+                "admin_models": {"$addToSet": {"$cond": [admin_condition, "$model", None]}},
+                "ai_models": {"$addToSet": {"$cond": [ai_condition, "$model", None]}},
+            }
+        }]
+        rows = list(collection.aggregate(pipeline))
+        row = rows[0] if rows else {}
+
+        def _card(docs_key: str, ids_key: str, models_key: str) -> Dict[str, Any]:
+            ids = {value for value in (row.get(ids_key) or []) if value is not None}
+            models = sorted({str(value) for value in (row.get(models_key) or []) if value})
+            return {
+                "documents": int(row.get(docs_key) or 0),
+                "unique_users": len(ids),
+                "models": models[:20],
+            }
+
+        result["cards"] = {
+            "users": _card("user_docs", "user_ids", "user_models"),
+            "ai_model": _card("ai_docs", "ai_ids", "ai_models"),
+            "admins": _card("admin_docs", "admin_ids", "admin_models"),
+        }
+        result["total_documents"] = int(row.get("total") or 0)
+        result["recent"] = {
+            "users": _recent(user_query),
+            "ai_model": _recent(ai_query),
+            "admins": _recent(admin_query),
+        }
+    except Exception as exc:
+        print(f"⚠️ Mongo chat overview failed: {exc}", flush=True)
+    return result

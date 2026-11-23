@@ -168,6 +168,75 @@ export interface ChatPayload {
   message?: string;
 }
 
+export interface UserEntry {
+  user_id: number;
+  first_name?: string;
+  username?: string;
+  message_count: number;
+  last_seen?: string;
+  full_memory: boolean;
+  full_memory_since?: string;
+  full_memory_by?: number | string;
+  chat_file?: string;
+  last_focus?: string;
+  role?: string;
+}
+
+export interface UsersPayload {
+  ok: boolean;
+  role: Role;
+  users: UserEntry[];
+  stats: { total: number; full_memory: number; mongo_primary: boolean };
+  message?: string;
+}
+
+export interface FullMemoryResult {
+  ok: boolean;
+  message?: string;
+  user_id?: number;
+  enabled?: boolean;
+}
+
+export interface MongoCard {
+  documents: number;
+  unique_users: number;
+  models: string[];
+}
+
+export interface MongoTurn {
+  id: string;
+  user_id: number;
+  first_name?: string;
+  user_text?: string;
+  model_reply?: string;
+  response_kind?: string;
+  status?: string;
+  model?: string;
+  created_at?: string;
+  scope?: string;
+}
+
+export interface MongoOverviewPayload {
+  ok: boolean;
+  storage: {
+    mongo_primary: boolean;
+    database: string;
+    chat_collection: string;
+    state_collections: string[];
+  };
+  cards: {
+    users: MongoCard;
+    ai_model: MongoCard;
+    admins: MongoCard;
+  };
+  recent: {
+    users: MongoTurn[];
+    ai_model: MongoTurn[];
+    admins: MongoTurn[];
+  };
+  message?: string;
+}
+
 export interface ApiResult<T> {
   data: T | null;
   error: string | null;
