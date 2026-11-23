@@ -180,13 +180,65 @@ export interface UserEntry {
   chat_file?: string;
   last_focus?: string;
   role?: string;
+  logged_turns?: number;
 }
 
 export interface UsersPayload {
   ok: boolean;
   role: Role;
   users: UserEntry[];
-  stats: { total: number; full_memory: number; mongo_primary: boolean };
+  stats: {
+    total: number;
+    full_memory: number;
+    mongo_primary: boolean;
+    mongo_users?: number;
+    stored_turns?: number;
+  };
+  message?: string;
+}
+
+export interface ChatHistoryMessage {
+  scope: string;
+  day: string;
+  at: string;
+  role: "user" | "bot";
+  text: string;
+}
+
+export interface ChatHistoryScope {
+  scope: string;
+  count: number;
+}
+
+export interface ChatHistoryPayload {
+  ok: boolean;
+  user: { user_id: number; name: string; first_name: string; message_count: number };
+  scopes: ChatHistoryScope[];
+  scope: string;
+  messages: ChatHistoryMessage[];
+  total: number;
+  has_more: boolean;
+  message?: string;
+}
+
+export interface ChatSearchHit {
+  user_id: number;
+  first_name: string;
+  scope: string;
+  day: string;
+  at: string;
+  role: "user" | "bot";
+  text: string;
+  snippet: string;
+}
+
+export interface ChatSearchPayload {
+  ok: boolean;
+  query: string;
+  hits: ChatSearchHit[];
+  total_hits: number;
+  truncated: boolean;
+  searched_docs: number;
   message?: string;
 }
 

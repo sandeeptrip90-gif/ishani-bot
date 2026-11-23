@@ -54,6 +54,20 @@ export const api = {
   activity: () => apiFetch<{ ok: boolean; entries: import("@/types").AuditEntry[] }>("/activity"),
   owners: () => apiFetch<{ ok: boolean; owners: import("@/types").OwnerEntry[]; invitations: import("@/types").InvitationEntry[] }>("/owners"),
   users: () => apiFetch<import("@/types").UsersPayload>("/users"),
+  chatHistory: (userId: number, scope: string, limit?: number) => {
+    const params = [
+      `user_id=${encodeURIComponent(String(userId))}`,
+      `scope=${encodeURIComponent(scope)}`,
+    ];
+    if (limit !== undefined) params.push(`limit=${encodeURIComponent(String(limit))}`);
+    return apiFetch<import("@/types").ChatHistoryPayload>(`/chats/history?${params.join("&")}`);
+  },
+  chatSearch: (params: { q: string; user_id?: number; limit?: number }) => {
+    const query = [`q=${encodeURIComponent(params.q)}`];
+    if (params.user_id !== undefined) query.push(`user_id=${encodeURIComponent(String(params.user_id))}`);
+    if (params.limit !== undefined) query.push(`limit=${encodeURIComponent(String(params.limit))}`);
+    return apiFetch<import("@/types").ChatSearchPayload>(`/chats/search?${query.join("&")}`);
+  },
   setFullMemory: (body: { user_id: number; enabled: boolean }) =>
     apiFetch<import("@/types").FullMemoryResult>("/users/full-memory", { method: "POST", body }),
   mongoOverview: () => apiFetch<import("@/types").MongoOverviewPayload>("/mongo/overview"),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -66,7 +66,14 @@ export function ChatInterface() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [messageQuery, setMessageQuery] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const messageNeedle = messageQuery.trim().toLocaleLowerCase();
+  const visibleMessages = useMemo(
+    () => (messageNeedle ? messages.filter((item) => item.text.toLocaleLowerCase().includes(messageNeedle)) : messages),
+    [messages, messageNeedle],
+  );
 
   const loadHistory = useCallback(async () => {
     const result = await api.aiHistory();
@@ -182,6 +189,23 @@ export function ChatInterface() {
 
       <div className="card chat-panel">
         {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+        <div className="toolbar" style={{ marginTop: 12 }}>
+          <div className="search-box">
+            <Icon name="search" size={16} />
+            <input
+              value={messageQuery}
+              onChange={(event) => setMessageQuery(event.target.value)}
+              placeholder="Filter messages in this conversation..."
+              aria-label="Filter chat messages"
+            />
+          </div>
+          <Badge tone="neutral">
+            {messageNeedle ? `${visibleMessages.length} of ${messages.length} messages` : `${messages.length} messages`}
+          </Badge>
+          {messageNeedle && (
+            <button className="btn ghost sm" type="button" onClick={() => setMessageQuery("")}>Clear</button>
+          )}
+        </div>
         <div className="chat-messages">
           {!historyLoaded && <div className="skeleton" style={{ height: 140 }} />}
           {historyLoaded && messages.length === 0 && (
@@ -190,7 +214,7 @@ export function ChatInterface() {
               <span className="bubble-meta">Persona & memory preserved from the Telegram bot</span>
             </div>
           )}
-          {messages.map((item) => (
+          {visibleMessages.map((item) => (
             <div key={item.id} className={`bubble ${item.role}`}>
               {item.role === "bot" ? readableReply(item.text) : item.text}
               {(item.mode || item.taskId || item.at) && (

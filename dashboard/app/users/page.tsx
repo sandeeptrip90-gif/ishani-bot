@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { MongoOverviewPayload, MongoTurn, UserEntry, UsersPayload } from "@/types";
@@ -61,6 +62,7 @@ export default function UsersPage() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState<Record<number, boolean>>({});
+  const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,6 +96,15 @@ export default function UsersPage() {
   const master = users?.role === "master";
   const storage = overview?.storage;
   const cards = overview?.cards;
+  const allUsers = users?.users || [];
+  const filteredUsers = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    if (!needle) return allUsers;
+    return allUsers.filter((user) =>
+      [String(user.user_id), user.first_name, user.username, user.role]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(needle)),
+    );
+  }, [allUsers, query]);
 
   return (
     <div className="stack">
@@ -127,8 +138,8 @@ export default function UsersPage() {
         <StatCard
           icon="users"
           label="Mongo users"
-          value={cards?.users.unique_users ?? 0}
-          foot={`${cards?.users.documents ?? 0} stored turns`}
+          value={users?.stats.mongo_users ?? cards?.users.unique_users ?? 0}
+          foot={`${users?.stats.stored_turns ?? cards?.users.documents ?? 0} stored turns`}
         />
         <StatCard
           icon="robot"
@@ -147,6 +158,12 @@ export default function UsersPage() {
           label="Full-memory users"
           value={users?.stats.full_memory ?? 0}
           foot={`of ${users?.stats.total ?? 0} known users`}
+        />
+        <StatCard
+          icon="file"
+          label="Stored turns"
+          value={users?.stats.stored_turns ?? cards?.users.documents ?? 0}
+          foot={`${users?.stats.mongo_users ?? cards?.users.unique_users ?? 0} users with chat state`}
         />
       </div>
 
@@ -179,65 +196,91 @@ export default function UsersPage() {
       </Card>
 
       <Card title="Full-memory trusted users" subtitle="Memory trust only — this does not change Telegram permissions">
-        {(users?.users.length ?? 0) === 0 ? (
+        {allUsers.length === 0 ? (
           <EmptyState icon="users" title="No known users yet">Users will appear after their first recorded turn.</EmptyState>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Messages</th>
-                  <th>Last seen</th>
-                  <th>Role</th>
-                  <th>Memory</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users?.users.map((user) => {
-                  const busy = Boolean(busyIds[user.user_id]);
-                  return (
-                    <tr key={user.user_id}>
-                      <td>
-                        <div className="cell-strong">{user.first_name || user.username || `User ${user.user_id}`}</div>
-                        <div className="cell-sub mono">
-                          {user.user_id}{user.username ? ` · @${user.username}` : ""}
-                        </div>
-                      </td>
-                      <td>{user.message_count}</td>
-                      <td>{formatDate(user.last_seen)}</td>
-                      <td>
-                        {user.role ? (
-                          <Badge tone={user.role === "master" ? "info" : "neutral"}>{user.role}</Badge>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td>
-                        <Badge tone={user.full_memory ? "ok" : "neutral"}>
-                          {user.full_memory ? "Full memory" : "Standard"}
-                        </Badge>
-                        {user.full_memory_since && <div className="cell-sub">Since {formatDate(user.full_memory_since)}</div>}
-                      </td>
-                      <td>
-                        <Button
-                          variant={user.full_memory ? "secondary" : "primary"}
-                          size="sm"
-                          icon={user.full_memory ? "xCircle" : "checkCircle"}
-                          loading={busy}
-                          disabled={!master || busy}
-                          onClick={() => void toggleFullMemory(user)}
-                        >
-                          {user.full_memory ? "Disable" : "Enable"}
-                        </Button>
-                      </td>
+          <>
+            <div className="toolbar">
+              <div className="search-box">
+                <Icon name="search" size={16} />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search by name, username or ID..."
+                  aria-label="Search users"
+                />
+              </div>
+              <Badge tone="neutral">{filteredUsers.length} of {allUsers.length} users</Badge>
+            </div>
+            {filteredUsers.length === 0 ? (
+              <EmptyState icon="search" title="No users match this search">Try a different name, username or user ID.</EmptyState>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Messages</th>
+                      <th>Mongo turns</th>
+                      <th>Last seen</th>
+                      <th>Role</th>
+                      <th>Memory</th>
+                      <th>Chats</th>
+                      <th>Action</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody>
+                    {filteredUsers.map((user) => {
+                      const busy = Boolean(busyIds[user.user_id]);
+                      return (
+                        <tr key={user.user_id}>
+                          <td>
+                            <div className="cell-strong">{user.first_name || user.username || `User ${user.user_id}`}</div>
+                            <div className="cell-sub mono">
+                              {user.user_id}{user.username ? ` · @${user.username}` : ""}
+                            </div>
+                          </td>
+                          <td>{user.message_count}</td>
+                          <td>{user.logged_turns ?? "—"}</td>
+                          <td>{formatDate(user.last_seen)}</td>
+                          <td>
+                            {user.role ? (
+                              <Badge tone={user.role === "master" ? "info" : "neutral"}>{user.role}</Badge>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td>
+                            <Badge tone={user.full_memory ? "ok" : "neutral"}>
+                              {user.full_memory ? "Full memory" : "Standard"}
+                            </Badge>
+                            {user.full_memory_since && <div className="cell-sub">Since {formatDate(user.full_memory_since)}</div>}
+                          </td>
+                          <td>
+                            <Link className="profile-link" href={`/users/${user.user_id}`}>
+                              <Icon name="eye" size={15} /> Open chat
+                            </Link>
+                          </td>
+                          <td>
+                            <Button
+                              variant={user.full_memory ? "secondary" : "primary"}
+                              size="sm"
+                              icon={user.full_memory ? "xCircle" : "checkCircle"}
+                              loading={busy}
+                              disabled={!master || busy}
+                              onClick={() => void toggleFullMemory(user)}
+                            >
+                              {user.full_memory ? "Disable" : "Enable"}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
         <p className="fineprint">
           Enabling full memory changes how much history Ishani may recall for that user. It does not grant admin powers,

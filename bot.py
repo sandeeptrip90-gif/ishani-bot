@@ -1174,7 +1174,7 @@ def _fit_local_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if item.get("name"):
                     normalized["name"] = item["name"]
                 rest.append(normalized)
-    return system + rest[-24:]
+    return system + rest[-60:]
 
 
 _ROMAN_HINDI_MARKERS = re.compile(
@@ -1209,8 +1209,9 @@ async def call_custom_openai(
     url = _openai_chat_url(cfg.get("endpoint", ""))
     api_key = cfg.get("api_key") or ""
     model = (cfg.get("model") or "").strip()
-    if not url or not api_key or not model:
+    if not url or not model:
         raise RuntimeError("Custom AI provider is not configured")
+    # api_key is optional: local OpenAI-compatible servers often run keyless.
 
     sampling = _model_sampling(model)
     hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message. Never mention being an AI, a model, a system prompt or a tool. Never invent fake 'You:'/'User:' dialogue."
@@ -1236,16 +1237,17 @@ async def call_custom_openai(
     messages.append({"role": "user", "content": prompt})
     messages = _fit_local_messages(messages)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    # Some local/OpenAI-compatible servers need no key at all. An empty
+    # "Bearer " header is rejected by httpx before the request even leaves.
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     def _openai_payload(temperature: float, thinking_off: bool) -> dict:
         body = {
             "model": model,
             "messages": messages,
-            "max_tokens": 350,
+            "max_tokens": 700,
             "temperature": temperature,
         }
         for key in ("top_p", "top_k", "repeat_penalty"):
@@ -1283,7 +1285,7 @@ async def call_custom_openai(
                         "think": False,
                         "options": {
                             "temperature": temperature,
-                            "num_predict": 350,
+                            "num_predict": 700,
                             **{k: v for k, v in sampling.items() if k != "temperature"},
                         },
                     },
@@ -1343,7 +1345,7 @@ async def call_custom_openai(
                         "Do not add new claims or commentary. Return only the rewritten reply."
                     ),
                 })
-                corrected, correction_calls = await _ask(http, 0.2)
+                corrected, correction_calls = await _ask(http, 0.4)
                 if corrected and not correction_calls:
                     text = corrected
         response = _simple_text_response(text)
@@ -1388,6 +1390,30 @@ LEFT_MESSAGES: List[str] = []
 DM_WELCOME_MESSAGES: List[str] = []
 
 # ========== ACKNOWLEDGMENT & CHAT ENDING WORDS ==========
+_EMOJI_CLUSTER_RE = re.compile(
+    r"(?:[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]"
+    r"(?:\uFE0F|\u200D[\U0001F000-\U0001FAFF])*|[0-9#*]\uFE0F?\u20E3)"
+)
+
+
+def _limit_emojis(text: str, allow: bool = True) -> str:
+    """Keep at most one emoji. Never changes newlines or surrounding words."""
+    matches = list(_EMOJI_CLUSTER_RE.finditer(text))
+    if not matches:
+        return text
+    if allow and len(matches) == 1:
+        return text
+    parts: List[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        parts.append(text[cursor:match.start()])
+        if allow and index == 0:
+            parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 def clean_reply_text(text: str) -> str:
     """Strip thinking dumps and RAG citation junk. Telegram only gets the reply."""
     if not text:
@@ -1406,7 +1432,11 @@ def clean_reply_text(text: str) -> str:
         r"^(?:(?:great question|happy to help|certainly|sure|of course|bilkul|zaroor)[!.,]?\s*)+",
         "", text, flags=re.IGNORECASE,
     ).strip()
-    return text
+    allow_emoji = "`" not in text and not has_any_links(text)
+    fraud = globals().get("_FRAUD")
+    if fraud is not None and hasattr(fraud, "search") and fraud.search(text):
+        allow_emoji = False
+    return _limit_emojis(text.strip(), allow_emoji)
 
 
 def user_language_notice(user_text: str, english: str, hinglish: str, hindi: str) -> str:
@@ -1615,14 +1645,38 @@ MINIMAL_PERSONA: Dict[str, Any] = {
     "company": {},
 }
 
+_PERSONA_MIGRATED = False
+
+
+def _merge_missing_persona_keys(remote: Dict[str, Any], local: Dict[str, Any]) -> bool:
+    """Fill newly added persona keys into Mongo without overwriting admin edits."""
+    changed = False
+    if not isinstance(local, dict):
+        return changed
+    for key, value in local.items():
+        if key not in remote:
+            remote[key] = copy.deepcopy(value)
+            changed = True
+    return changed
+
 
 def load_persona() -> Dict[str, Any]:
     """Load Mongo-primary persona; a bad edit falls back to its saved block."""
+    global _PERSONA_MIGRATED
     data: Optional[Dict[str, Any]] = None
     if mongo_store.enabled():
         remote = mongo_store.load_state(mongo_store.PERSONA_JSON_KEY)
         if isinstance(remote, dict):
             data = remote
+            if not _PERSONA_MIGRATED:
+                _PERSONA_MIGRATED = True
+                try:
+                    with PERSONA_PATH.open("r", encoding="utf-8") as f:
+                        local = json.load(f)
+                    if _merge_missing_persona_keys(data, local):
+                        mongo_store.save_state(mongo_store.PERSONA_JSON_KEY, data)
+                except Exception as exc:
+                    print(f"⚠️ Persona key migration skipped: {exc}", flush=True)
     if data is None:
         try:
             with PERSONA_PATH.open("r", encoding="utf-8") as f:
@@ -1925,6 +1979,23 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
     if not isinstance(controls, dict):
         controls = {}
 
+    # Dedicated internal training (desi-girl voice, emoji restraint, signup motive).
+    # Kept separate from master_prompt so admin lesson edits never erase it.
+    training = persona.get("internal_training") or {}
+    training_lines: List[str] = []
+    if isinstance(training, dict):
+        raw_training = training.get("lines")
+        if isinstance(raw_training, list):
+            training_lines = [
+                str(line).strip() for line in raw_training if str(line).strip()
+            ]
+    if not training_lines:
+        training_lines = [
+            "STYLE (never overrides link or admin rules): Talk like a warm Indian desi "
+            "girl in natural Hinglish — simple words, light teasing, respectful, emotionally "
+            "aware. Never force slang, stereotypes or a sales voice."
+        ]
+
     # Put the live admin rules at the top AND the bottom. Small local models tend
     # to obey the beginning and end of a prompt more reliably than the middle.
     authority_parts: List[str] = []
@@ -1964,6 +2035,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
         # the company details or the final response rules from the middle.
         parts = [
             *compact_lines,
+            *training_lines,
             authority_block,
             *memory_lines,
             company_brief(persona, group_business) if include_company else "",
@@ -1974,18 +2046,21 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "When speaking about yourself in Hindi or Hinglish, use feminine forms such as 'karti hoon' or 'bolti hoon', never masculine forms.",
             "Understand the user's need and respond with one useful, truthful next step. Mention Chelsea Football or invite them to join when relevant, naturally and without repeating a pitch. Never pressure someone to deposit, promise profit, or present predictions as guaranteed income.",
             "Use only company features, amounts, steps and links stated above. Match the latest message's language and script exactly: English to English, Roman Hindi to Roman Hindi, Devanagari to Devanagari, even if earlier turns used another language. Never expose internal reasoning; send only the final reply.",
+            *training_lines,
             authority_block,
             final_check,
         ]
     else:
         parts = [
             (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
+            *training_lines,
             authority_block,
             company_brief(persona, group_business) if include_company else "",
             *memory_lines,
             *full_lines,
             "Explain in the smallest everyday words of the user's language, one idea per short line. No jargon, no brochure tone. For 'kaise' or 'kya hai', give the plain meaning first, then at most one next step.",
             "Answer where the question was asked. In a group, explain fully in the group; never ask them to DM or say 'bheed hai'. One question max, skip it if they are venting.",
+            *training_lines,
             authority_block,
             final_check,
         ]
@@ -4431,9 +4506,12 @@ async def _tool_generate_image(args: Dict[str, Any], chat_id: Optional[int], bot
         return "❌ Image save karne ka safe path nahi mila."
     try:
         async with httpx.AsyncClient(timeout=120) as http:
+            image_headers = {"Content-Type": "application/json"}
+            if api_key:
+                image_headers["Authorization"] = f"Bearer {api_key}"
             response = await http.post(
                 base + "/images/generations",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                headers=image_headers,
                 json={"model": model, "prompt": prompt, "n": 1, "size": "1024x1024"},
             )
             if response.status_code >= 400:
@@ -5981,12 +6059,63 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "message": str(e)[:300]})
 
+    def _admin_ids(self) -> List[int]:
+        ids = {int(ADMIN_ID)} if ADMIN_ID else set()
+        for key, record in (dm.data.get("owners") or {}).items():
+            if not isinstance(record, dict):
+                continue
+            if not (record.get("accepted") or str(record.get("status") or "").lower()
+                    in {"accepted", "active"} or record.get("role")):
+                continue
+            try:
+                ids.add(int(key))
+            except (TypeError, ValueError):
+                continue
+        return sorted(ids)
+
+    @staticmethod
+    def _flatten_chat_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Whitelist chat messages only; never expose system prompts or secrets."""
+        messages: List[Dict[str, Any]] = []
+        conv = record.get("conversations") if isinstance(record, dict) else None
+        if not isinstance(conv, dict):
+            return messages
+        for scope, entry in conv.items():
+            if not isinstance(entry, dict):
+                continue
+            sections = entry.get("sections")
+            if not isinstance(sections, dict):
+                continue
+            for day in sorted(sections.keys()):
+                for item in sections.get(day) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    text = str(item.get("text") or "")
+                    if not text:
+                        continue
+                    messages.append({
+                        "scope": str(scope),
+                        "day": str(day),
+                        "at": str(item.get("at") or ""),
+                        "role": "bot" if str(item.get("role") or "") in {"bot", "assistant"} else "user",
+                        "text": text,
+                    })
+        messages.sort(key=lambda item: (item["day"], item["at"]))
+        return messages
+
     def _api_users(self):
         try:
             session = self._auth()
             if not session or session["role"] != "master":
                 return self._json(403, {"ok": False, "message": "Master owner only."})
             users = dm.user_directory()
+            turn_counts = mongo_logger.user_turn_counts(self._admin_ids())
+            chat_state_users = sum(
+                1 for key in mongo_store.state_keys()
+                if key.startswith(mongo_store.CHAT_KEY_PREFIX)
+            )
+            for user in users:
+                user["logged_turns"] = int(turn_counts.get(int(user["user_id"]), 0))
             return self._json(200, {
                 "ok": True,
                 "role": session["role"],
@@ -5995,7 +6124,125 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                     "total": len(users),
                     "full_memory": sum(1 for item in users if item.get("full_memory")),
                     "mongo_primary": mongo_store.enabled(),
+                    "mongo_users": chat_state_users,
+                    "stored_turns": sum(turn_counts.values()),
                 },
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
+    def _api_chat_history(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                user_id = int(query.get("user_id", [""])[0])
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            if user_id <= 0:
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            scope = (query.get("scope", ["private"])[0] or "private").strip()
+            try:
+                limit = min(max(int(query.get("limit", ["200"])[0]), 1), 1000)
+            except (TypeError, ValueError):
+                limit = 200
+
+            record = dm.load_chat(user_id, "User")
+            messages = self._flatten_chat_record(record)
+            scopes: List[Dict[str, Any]] = []
+            scratch: Dict[str, int] = {}
+            for item in messages:
+                scratch[item["scope"]] = scratch.get(item["scope"], 0) + 1
+            for name, count in sorted(scratch.items()):
+                scopes.append({"scope": name, "count": count})
+            filtered = messages if scope == "all" else [m for m in messages if m["scope"] == scope]
+            directory = next(
+                (item for item in dm.user_directory() if int(item["user_id"]) == user_id), {}
+            )
+            return self._json(200, {
+                "ok": True,
+                "user": {
+                    "user_id": user_id,
+                    "name": str(record.get("name") or directory.get("first_name") or "User"),
+                    "first_name": str(directory.get("first_name") or record.get("name") or ""),
+                    "message_count": int(directory.get("message_count") or 0),
+                },
+                "scopes": scopes,
+                "scope": scope,
+                "messages": filtered[-limit:],
+                "total": len(filtered),
+                "has_more": len(filtered) > limit,
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
+    def _api_chat_search(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            query = parse_qs(urlparse(self.path).query)
+            term = (query.get("q", [""])[0] or "").strip()
+            if not term:
+                return self._json(400, {"ok": False, "message": "Search text is required."})
+            if len(term) > 120:
+                return self._json(400, {"ok": False, "message": "Search text is too long."})
+            try:
+                limit = min(max(int(query.get("limit", ["50"])[0]), 1), 200)
+            except (TypeError, ValueError):
+                limit = 50
+            user_filter: Optional[int] = None
+            if query.get("user_id"):
+                try:
+                    user_filter = int(query["user_id"][0])
+                except (TypeError, ValueError):
+                    return self._json(400, {"ok": False, "message": "Invalid user_id."})
+            needle = term.casefold()
+            keys = (
+                [mongo_store.chat_state_key(user_filter)] if user_filter
+                else [key for key in mongo_store.state_keys()
+                      if key.startswith(mongo_store.CHAT_KEY_PREFIX)]
+            )[:500]
+            hits: List[Dict[str, Any]] = []
+            for key in keys:
+                try:
+                    user_id = int(str(key).split(":", 1)[1])
+                except (IndexError, TypeError, ValueError):
+                    continue
+                record = mongo_store.load_state(key)
+                if not isinstance(record, dict):
+                    record = dm.load_chat(user_id, "User")
+                messages = self._flatten_chat_record(record)
+                for item in messages:
+                    text = item["text"]
+                    index = text.casefold().find(needle)
+                    if index < 0:
+                        continue
+                    start = max(0, index - 60)
+                    snippet = text[start:index + len(term) + 100]
+                    hits.append({
+                        "user_id": user_id,
+                        "first_name": str(record.get("name") or record.get("telegram_name") or ""),
+                        "scope": item["scope"],
+                        "day": item["day"],
+                        "at": item["at"],
+                        "role": item["role"],
+                        "text": text,
+                        "snippet": snippet,
+                    })
+                    if len(hits) >= limit:
+                        break
+                if len(hits) >= limit:
+                    break
+            return self._json(200, {
+                "ok": True,
+                "query": term,
+                "hits": hits,
+                "total_hits": len(hits),
+                "truncated": len(hits) >= limit,
+                "searched_docs": len(keys),
             })
         except Exception as e:
             return self._json(500, {"ok": False, "message": str(e)[:300]})
@@ -6005,18 +6252,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             session = self._auth()
             if not session or session["role"] != "master":
                 return self._json(403, {"ok": False, "message": "Master owner only."})
-            admin_ids = {int(ADMIN_ID)}
-            for key, record in (dm.data.get("owners") or {}).items():
-                if not isinstance(record, dict):
-                    continue
-                if not (record.get("accepted") or str(record.get("status") or "").lower() in {"accepted", "active"}
-                        or record.get("role")):
-                    continue
-                try:
-                    admin_ids.add(int(key))
-                except (TypeError, ValueError):
-                    continue
-            payload = mongo_logger.chat_overview(sorted(admin_ids))
+            payload = mongo_logger.chat_overview(self._admin_ids())
             payload["ok"] = True
             payload["storage"] = {
                 "mongo_primary": mongo_store.enabled(),
@@ -6138,6 +6374,10 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return self._api_owners()
         if path == "/api/users":
             return self._api_users()
+        if path == "/api/chats/history":
+            return self._api_chat_history()
+        if path == "/api/chats/search":
+            return self._api_chat_search()
         if path == "/api/mongo/overview":
             return self._api_mongo_overview()
         if path == "/api/schedule":

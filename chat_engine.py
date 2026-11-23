@@ -36,14 +36,18 @@ async def _send_paced(msg, text: str) -> None:
 
 
 def _shape_reply(reply: str, is_group: bool, max_lines: int = 2) -> List[str]:
-    """Keep the answer readable in both places; groups are no longer truncated.
+    """Split long answers on sentence boundaries, not only on newlines.
 
-    A group reply used to be sliced to its first line, which silently dropped the
-    explanation. Now both scopes get the same short, complete answer.
+    A single long line used to lose everything after the first 1000 characters.
+    Sentence-aware chunks keep the full answer readable in DMs and groups alike.
     """
     lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
-    limit = max_lines if not is_group else max(2, max_lines)
-    return [line[:1000] for line in lines[:limit]]
+    chunks: List[str] = []
+    for line in lines:
+        parts = re.split(r"(?<=[.!?])\s+(?=[\w\u0900-\u097f])", line)
+        chunks.extend(part.strip() for part in parts if part.strip())
+    limit = max_lines
+    return [chunk[:1000] for chunk in chunks[:limit]]
 
 
 async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, context,
@@ -68,7 +72,7 @@ async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, 
             "माफ़ कीजिए, मैं ठीक से समझ नहीं पाई 😅 एक बार फिर बताएँगे?",
         )
     # Answer where the question was asked. No DM nudge is bolted on in groups.
-    bubbles = b._shape_reply(reply, is_group, max_lines=3 if fraud_dm else 2)
+    bubbles = b._shape_reply(reply, is_group)
     target = update.effective_message if getattr(update, "effective_message", None) else update.message
     for bubble in bubbles:
         await b._send_paced(target, bubble)
@@ -223,8 +227,7 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
                     b.clean_reply_text(retry_response.text) if retry_response and retry_response.text else ""
                 )
                 if retry_reply:
-                    bubbles = b._shape_reply(retry_reply, is_group,
-                                             max_lines=3 if fraud_dm else 2)
+                    bubbles = b._shape_reply(retry_reply, is_group)
                     for bubble in bubbles:
                         await b._send_paced(update.message, bubble)
                     delivered = " | ".join(bubbles)

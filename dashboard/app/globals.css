@@ -289,6 +289,7 @@ tbody tr:hover { background: rgba(37, 99, 235, 0.06); }
 .bubble.user { align-self: flex-end; background: #1d4ed8; color: #fff; border-bottom-right-radius: 4px; }
 .bubble.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border-soft); color: var(--text-2); border-bottom-left-radius: 4px; }
 .bubble-meta { font-size: 10px; color: var(--faint); margin-top: 5px; display: block; }
+.activity-item mark, .bubble mark { background: rgba(250, 204, 21, 0.3); color: inherit; border-radius: 3px; padding: 0 2px; }
 .chat-composer { display: flex; gap: 9px; align-items: flex-end; border-top: 1px solid var(--border); padding-top: 13px; }
 .chat-composer textarea { min-height: 62px; max-height: 160px; }
 

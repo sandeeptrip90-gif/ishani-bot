@@ -283,3 +283,25 @@ def chat_overview(admin_ids: Optional[List[int]] = None) -> Dict[str, Any]:
     except Exception as exc:
         print(f"⚠️ Mongo chat overview failed: {exc}", flush=True)
     return result
+
+
+def user_turn_counts(admin_ids: Optional[List[int]] = None) -> Dict[int, int]:
+    """Number of logged non-admin turns per user, for the dashboard user list."""
+    counts: Dict[int, int] = {}
+    collection = _get_collection()
+    if collection is None:
+        return counts
+    admins = [int(value) for value in (admin_ids or []) if isinstance(value, (int, str)) and str(value).isdigit()]
+    match = {"user_id": {"$nin": admins}} if admins else {}
+    try:
+        rows = collection.aggregate([
+            {"$match": match},
+            {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
+        ])
+        for row in rows:
+            user_id = row.get("_id")
+            if user_id is not None:
+                counts[int(user_id)] = int(row.get("count") or 0)
+    except Exception as exc:
+        print(f"⚠️ Mongo user turn counts failed: {exc}", flush=True)
+    return counts
