@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -54,6 +54,11 @@ export function UserChatHistory({ userId }: { userId: number }) {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
 
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
   const loadHistory = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -99,8 +104,28 @@ export function UserChatHistory({ userId }: { userId: number }) {
     setSearchError("");
   };
 
+  const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setSendError("");
+    const result = await api.sendUserMessage({ user_id: userId, text });
+    setSending(false);
+    if (result.error || result.data?.ok === false) {
+      setSendError(result.error || result.data?.message || "Could not send the message.");
+      return;
+    }
+    setDraft("");
+    await loadHistory();
+  };
+
   const messages = history?.messages || [];
   const title = history?.user?.name || history?.user?.first_name || `User ${userId}`;
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, scope]);
 
   return (
     <div className="stack">
@@ -120,6 +145,7 @@ export function UserChatHistory({ userId }: { userId: number }) {
 
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
       {searchError && <Notice onDismiss={() => setSearchError("")}>{searchError}</Notice>}
+      {sendError && <Notice onDismiss={() => setSendError("")}>{sendError}</Notice>}
 
       <Card title="Search messages" subtitle="Full-text search over message text only — no prompts, keys or logs are shown">
         <form className="toolbar" onSubmit={(event) => void runSearch(event)}>
@@ -169,55 +195,85 @@ export function UserChatHistory({ userId }: { userId: number }) {
         )}
       </Card>
 
-      <Card title="Conversation history" subtitle="Whitelisted message text from this user's private, group and web chats">
-        <div className="tabs">
-          <button type="button" className={`tab ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>
-            All
-          </button>
-          {(history?.scopes || []).map((entry) => (
-            <button
-              type="button"
-              key={entry.scope}
-              className={`tab ${scope === entry.scope ? "active" : ""}`}
-              onClick={() => setScope(entry.scope)}
-            >
-              {scopeLabel(entry.scope)} <span className="cell-sub">({entry.count})</span>
-            </button>
-          ))}
-        </div>
-        <div className="toolbar">
-          <Badge tone="neutral">{loading ? "Loading…" : `${messages.length} of ${history?.total ?? 0} messages`}</Badge>
-          {!loading && history?.has_more && <Badge tone="warn">Showing the most recent {HISTORY_LIMIT}</Badge>}
-        </div>
-        {loading ? (
-          <div className="activity-list">
-            {[0, 1, 2, 3].map((index) => (
-              <div key={index} className="skeleton" style={{ height: 62 }} />
-            ))}
-          </div>
-        ) : messages.length === 0 ? (
-          <EmptyState icon="chat" title="No chat history for this scope">
-            No whitelisted messages are stored here yet.
-          </EmptyState>
-        ) : (
-          <div className="activity-list">
-            {messages.map((message, index) => (
-              <div className="activity-item" key={`${message.day}-${message.at}-${index}`}>
-                <div className="grow">
-                  <div className="row" style={{ marginBottom: 6 }}>
-                    <Badge tone={message.role === "bot" ? "info" : "neutral"}>
-                      {message.role === "bot" ? "Bot" : "User"}
-                    </Badge>
-                    {scope === "all" && <Badge tone="neutral">{scopeLabel(message.scope)}</Badge>}
-                    <span className="cell-sub">{message.day}</span>
-                  </div>
-                  <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{message.text}</div>
-                </div>
-                <span className="timestamp">{formatDate(message.at)}</span>
+      <Card className="chat-window-card" title="Conversation" subtitle="Read the full history and reply by Telegram DM — replies are saved to Mongo">
+        <div className="chat-window">
+          <div className="chat-window-head">
+            <div className="chat-avatar">{title.slice(0, 1).toUpperCase()}</div>
+            <div className="grow">
+              <strong>{title}</strong>
+              <div className="cell-sub">
+                Telegram ID <span className="mono">{userId}</span> ·{" "}
+                {loading ? "Loading…" : `${messages.length} of ${history?.total ?? 0} messages`}
               </div>
+            </div>
+            <Badge tone="info"><Icon name="shield" size={13} /> Master</Badge>
+          </div>
+
+          <div className="tabs chat-tabs">
+            <button type="button" className={`tab ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>
+              All
+            </button>
+            {(history?.scopes || []).map((entry) => (
+              <button
+                type="button"
+                key={entry.scope}
+                className={`tab ${scope === entry.scope ? "active" : ""}`}
+                onClick={() => setScope(entry.scope)}
+              >
+                {scopeLabel(entry.scope)} <span className="cell-sub">({entry.count})</span>
+              </button>
             ))}
           </div>
-        )}
+
+          <div className="chat-window-body" aria-live="polite">
+            {loading ? (
+              <div className="chat-window-loading">
+                {[0, 1, 2, 3].map((index) => (
+                  <div key={index} className="skeleton" style={{ height: 54, width: index % 2 ? "72%" : "58%" }} />
+                ))}
+              </div>
+            ) : messages.length === 0 ? (
+              <EmptyState icon="chat" title="No chat history for this scope">
+                No whitelisted messages are stored here yet.
+              </EmptyState>
+            ) : (
+              messages.map((message, index) => {
+                const isBot = message.role === "bot";
+                const showDay = index === 0 || messages[index - 1].day !== message.day;
+                return (
+                  <div className="chat-entry" key={`${message.day}-${message.at}-${index}`}>
+                    {showDay && <div className="chat-day">{message.day}</div>}
+                    <div className={`chat-row ${isBot ? "bot" : "user"}`}>
+                      <div className={`chat-bubble ${isBot ? "bot" : "user"}`}>
+                        <div className="chat-bubble-text">{highlight(message.text, searchedTerm)}</div>
+                        <span className="chat-time">
+                          {formatDate(message.at)}
+                          {scope === "all" ? ` · ${scopeLabel(message.scope)}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {!loading && history?.has_more && (
+            <div className="fineprint">Showing the most recent {HISTORY_LIMIT} messages.</div>
+          )}
+          <form className="chat-window-composer" onSubmit={(event) => void sendMessage(event)}>
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={`Message ${title} on Telegram...`}
+              aria-label="Message to user"
+              maxLength={4000}
+            />
+            <Button type="submit" icon="send" loading={sending} disabled={!draft.trim()}>Send DM</Button>
+          </form>
+          <div className="fineprint">Sends a Telegram DM from the master account and mirrors it into this user&apos;s Mongo memory.</div>
+        </div>
       </Card>
     </div>
   );

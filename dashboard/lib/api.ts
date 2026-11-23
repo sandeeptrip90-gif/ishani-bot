@@ -70,6 +70,8 @@ export const api = {
   },
   setFullMemory: (body: { user_id: number; enabled: boolean }) =>
     apiFetch<import("@/types").FullMemoryResult>("/users/full-memory", { method: "POST", body }),
+  sendUserMessage: (body: { user_id: number; text: string }) =>
+    apiFetch<import("@/types").UserMessageResult>("/users/message", { method: "POST", body }),
   mongoOverview: () => apiFetch<import("@/types").MongoOverviewPayload>("/mongo/overview"),
   inviteOwner: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; token?: string; expires_at?: string; message?: string }>("/owners/invite", { method: "POST", body }),
   verifyGroup: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; message?: string }>("/owners/verify", { method: "POST", body }),

@@ -249,6 +249,13 @@ export interface FullMemoryResult {
   enabled?: boolean;
 }
 
+export interface UserMessageResult {
+  ok: boolean;
+  message?: string;
+  user_id?: number;
+  message_id?: string;
+}
+
 export interface MongoCard {
   documents: number;
   unique_users: number;

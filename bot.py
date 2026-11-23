@@ -6247,6 +6247,34 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "message": str(e)[:300]})
 
+    def _send_user_message(self, user_id: int, text: str, actor_id: Any) -> Tuple[bool, str, str]:
+        """Send one master-authored message to a Telegram user and mirror it to memory."""
+        if not BOT_APP or not BOT_LOOP:
+            return False, "Bot is not connected right now.", ""
+        try:
+            async def _send():
+                return await BOT_APP.bot.send_message(chat_id=user_id, text=text)
+
+            sent = _run_bot_coro(_send())
+            if sent is None:
+                return False, "Telegram rejected or failed the send.", ""
+        except Exception as e:
+            return False, str(e)[:200], ""
+
+        directory = next(
+            (item for item in dm.user_directory() if int(item["user_id"]) == user_id), {}
+        )
+        first_name = str(directory.get("first_name") or "User")
+        dm.append_chat(user_id, first_name, "bot", text, scope="private")
+        dm.audit(
+            "dashboard_user_message",
+            actor_id,
+            f"user:{user_id}",
+            f"chars={len(text)}",
+        )
+        message_id = str(getattr(sent, "message_id", "") or "")
+        return True, "Message sent and saved to Mongo memory.", message_id
+
     def _api_mongo_overview(self):
         try:
             session = self._auth()
@@ -6766,6 +6794,30 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                 "message": f"Full-memory {'enabled' if enabled else 'disabled'} for {user_id}.",
                 "user_id": user_id,
                 "enabled": bool(record.get("full_memory")),
+            })
+        if path == "/api/users/message":
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            try:
+                user_id = int(data.get("user_id"))
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            if user_id <= 0:
+                return self._json(400, {"ok": False, "message": "Valid user_id is required."})
+            text = str(data.get("text") or "").strip()
+            if not text:
+                return self._json(400, {"ok": False, "message": "Message text is required."})
+            if len(text) > 4000:
+                return self._json(400, {"ok": False, "message": "Message is too long (4000 char max)."})
+            sent, message, message_id = self._send_user_message(
+                user_id, text, session.get("user_id")
+            )
+            return self._json(200 if sent else 502, {
+                "ok": sent,
+                "message": message,
+                "user_id": user_id,
+                "message_id": message_id,
             })
         if path == "/api/config":
             session = self._auth()
