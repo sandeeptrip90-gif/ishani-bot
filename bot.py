@@ -413,6 +413,77 @@ class DataManager:
         self.data["broadcast_templates"] = templates
         self.save()
         return templates
+
+    def training_examples(self) -> List[Dict[str, Any]]:
+        examples = self.data.get("training_examples")
+        if not isinstance(examples, list):
+            examples = []
+            self.data["training_examples"] = examples
+            self.save()
+        return [item for item in examples if isinstance(item, dict)]
+
+    def capture_training_example(self, user_id: int, first_name: str, user_text: str,
+                                 model_reply: str, source: str = "telegram",
+                                 approved: bool = False) -> Optional[Dict[str, Any]]:
+        """Store a successful user/model turn as training data (deduplicated)."""
+        user_text = str(user_text or "").strip()
+        model_reply = str(model_reply or "").strip()
+        if not user_text or not model_reply:
+            return None
+        if len(user_text) < 4 or len(model_reply) < 4:
+            return None
+        examples = self.training_examples()
+        signature = (str(user_id), user_text[:240], model_reply[:240])
+        for item in examples:
+            if (str(item.get("user_id")), str(item.get("user_text", ""))[:240],
+                str(item.get("model_reply", ""))[:240]) == signature:
+                return item
+        example = {
+            "id": f"train_{int(datetime.now().timestamp() * 1000)}",
+            "user_id": int(user_id),
+            "first_name": str(first_name or "User"),
+            "user_text": user_text[:1000],
+            "model_reply": model_reply[:1000],
+            "source": str(source or "telegram")[:40],
+            "status": "approved" if approved else "pending",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        examples.insert(0, example)
+        self.data["training_examples"] = examples[:500]
+        self.save()
+        return example
+
+    def set_training_example_status(self, example_id: str, status: str) -> bool:
+        for item in self.training_examples():
+            if str(item.get("id")) == str(example_id):
+                item["status"] = "approved" if status == "approved" else "rejected"
+                self.save()
+                return True
+        return False
+
+    def delete_training_example(self, example_id: str) -> bool:
+        before = len(self.training_examples())
+        self.data["training_examples"] = [
+            item for item in self.training_examples()
+            if str(item.get("id")) != str(example_id)
+        ]
+        changed = len(self.data["training_examples"]) != before
+        if changed:
+            self.save()
+        return changed
+
+    def add_training_example(self, user_text: str, model_reply: str,
+                             first_name: str = "Training", approved: bool = True) -> Optional[Dict[str, Any]]:
+        return self.capture_training_example(
+            0, first_name, user_text, model_reply, source="manual", approved=approved
+        )
+
+    def training_examples_for_prompt(self, limit: int = 3) -> List[Dict[str, Any]]:
+        approved = [
+            item for item in self.training_examples()
+            if str(item.get("status")) == "approved"
+        ]
+        return approved[:limit]
     
     def set_pdf_file_id(self, file_id: str):
         """Store PDF file_id"""
@@ -2090,6 +2161,14 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "aware. Never force slang, stereotypes or a sales voice."
         ]
 
+    approved_examples = dm.training_examples_for_prompt(3)
+    example_lines: List[str] = []
+    if approved_examples:
+        example_lines.append("TRAINING EXAMPLES (approved user/model turns; match this warmth, brevity and style):")
+        for item in approved_examples:
+            example_lines.append(f"User: {str(item.get('user_text') or '')[:180]}")
+            example_lines.append(f"Ishani: {str(item.get('model_reply') or '')[:180]}")
+
     # Put the live admin rules at the top AND the bottom. Small local models tend
     # to obey the beginning and end of a prompt more reliably than the middle.
     authority_parts: List[str] = []
@@ -2130,6 +2209,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
         parts = [
             *compact_lines,
             *training_lines,
+            *example_lines,
             authority_block,
             *memory_lines,
             company_brief(persona, group_business) if include_company else "",
@@ -2148,6 +2228,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
         parts = [
             (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
             *training_lines,
+            *example_lines,
             authority_block,
             company_brief(persona, group_business) if include_company else "",
             *memory_lines,
@@ -6537,6 +6618,12 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return self._api_users()
         if path == "/api/users/templates":
             return self._api_user_templates()
+        if path == "/api/training/examples":
+            return self._api_training_examples()
+        if path == "/api/training/settings":
+            return self._api_training_settings()
+        if path == "/api/training/export":
+            return self._api_training_export()
         if path == "/api/chats/history":
             return self._api_chat_history()
         if path == "/api/chats/search":
@@ -6913,6 +7000,64 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "message": str(e)[:300]})
 
+    def _api_training_examples(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            query = parse_qs(urlparse(self.path).query)
+            status = (query.get("status", ["all"])[0] or "all").strip().lower()
+            try:
+                limit = min(max(int(query.get("limit", ["100"])[0]), 1), 500)
+            except (TypeError, ValueError):
+                limit = 100
+            examples = dm.training_examples()
+            if status in {"approved", "pending", "rejected"}:
+                examples = [item for item in examples if str(item.get("status")) == status]
+            return self._json(200, {
+                "ok": True,
+                "examples": examples[:limit],
+                "total": len(examples),
+                "auto_capture": bool(dm.data.get("training_auto_capture", True)),
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
+    def _api_training_settings(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            return self._json(200, {
+                "ok": True,
+                "auto_capture": bool(dm.data.get("training_auto_capture", True)),
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
+    def _api_training_export(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            status = (parse_qs(urlparse(self.path).query).get("status", ["approved"])[0] or "approved").strip().lower()
+            examples = dm.training_examples()
+            if status in {"approved", "pending", "rejected"}:
+                examples = [item for item in examples if str(item.get("status")) == status]
+            lines = []
+            for item in examples:
+                record = {
+                    "messages": [
+                        {"role": "user", "content": str(item.get("user_text") or "")},
+                        {"role": "assistant", "content": str(item.get("model_reply") or "")},
+                    ]
+                }
+                lines.append(json.dumps(record, ensure_ascii=False))
+            body = "\n".join(lines) + ("\n" if lines else "")
+            self._json(200, {"ok": True, "format": "jsonl", "count": len(lines), "content": body})
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
     def _perform_group_action(self, session: Dict[str, Any], data: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Shared by /api/group/action and confirmed AI actions."""
         try:
@@ -7055,6 +7200,66 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "message": "Template id is required."})
                 templates = dm.remove_broadcast_template(template_id)
                 return self._json(200, {"ok": True, "templates": templates})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/training/status":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                example_id = str(data.get("id") or "").strip()
+                status = str(data.get("status") or "").strip().lower()
+                if not example_id or status not in {"approved", "pending", "rejected"}:
+                    return self._json(400, {"ok": False, "message": "Valid id and status are required."})
+                if not dm.set_training_example_status(example_id, status):
+                    return self._json(404, {"ok": False, "message": "Training example not found."})
+                return self._json(200, {"ok": True, "message": f"Example marked {status}."})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/training/delete":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                example_id = str(data.get("id") or "").strip()
+                if not example_id:
+                    return self._json(400, {"ok": False, "message": "Example id is required."})
+                if not dm.delete_training_example(example_id):
+                    return self._json(404, {"ok": False, "message": "Training example not found."})
+                return self._json(200, {"ok": True, "message": "Training example deleted."})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/training/add":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                user_text = str(data.get("user_text") or "").strip()
+                model_reply = str(data.get("model_reply") or "").strip()
+                if not user_text or not model_reply:
+                    return self._json(400, {"ok": False, "message": "Both user and reply text are required."})
+                example = dm.add_training_example(
+                    user_text, model_reply,
+                    first_name=str(data.get("first_name") or "Training").strip() or "Training",
+                    approved=True,
+                )
+                if not example:
+                    return self._json(400, {"ok": False, "message": "Example could not be saved."})
+                return self._json(200, {"ok": True, "example": example})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/training/settings":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                if "auto_capture" in data:
+                    dm.data["training_auto_capture"] = bool(data.get("auto_capture"))
+                    dm.save()
+                return self._json(200, {
+                    "ok": True,
+                    "auto_capture": bool(dm.data.get("training_auto_capture", True)),
+                })
             except Exception as e:
                 return self._json(500, {"ok": False, "message": str(e)[:300]})
         if path == "/api/config":

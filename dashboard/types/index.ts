@@ -286,6 +286,31 @@ export interface MongoCard {
   models: string[];
 }
 
+export interface TrainingExample {
+  id: string;
+  user_id: number;
+  first_name?: string;
+  user_text: string;
+  model_reply: string;
+  source?: string;
+  status: "approved" | "pending" | "rejected" | string;
+  created_at?: string;
+}
+
+export interface TrainingExamplesPayload {
+  ok: boolean;
+  examples: TrainingExample[];
+  total: number;
+  auto_capture: boolean;
+  message?: string;
+}
+
+export interface TrainingMutationResult {
+  ok: boolean;
+  message?: string;
+  example?: TrainingExample;
+}
+
 export interface MongoTurn {
   id: string;
   user_id: number;

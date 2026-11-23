@@ -204,6 +204,12 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
         )
         _log_turn(reply=delivered, raw_reply=raw_reply,
                   system_instruction=personal_system)
+        if (b.mongo_store.enabled()
+                and b.dm.data.get("training_auto_capture", True)):
+            b.dm.capture_training_example(
+                user_id, first_name, user_text, delivered,
+                source="telegram", approved=False,
+            )
 
     except Exception as e:
         error_msg = str(e)
@@ -236,6 +242,12 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
                               raw_reply=retry_response.text if retry_response else retry_reply,
                               response_kind="ai_retry", status="ok_after_retry",
                               system_instruction=personal_system)
+                    if (b.mongo_store.enabled()
+                            and b.dm.data.get("training_auto_capture", True)):
+                        b.dm.capture_training_example(
+                            user_id, first_name, user_text, delivered,
+                            source="telegram", approved=False,
+                        )
                     return
             except Exception as retry_error:
                 print(f"❌ ERROR after 10s wait: {retry_error}")

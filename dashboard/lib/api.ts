@@ -80,6 +80,25 @@ export const api = {
     apiFetch<import("@/types").BroadcastTemplatesPayload>("/users/templates/remove", { method: "POST", body }),
   broadcastUsers: (body: { user_ids: number[] | "all_started"; message: string; template_id?: string }) =>
     apiFetch<import("@/types").UserBroadcastResult>("/users/broadcast", { method: "POST", body }),
+  trainingExamples: (status?: string, limit?: number) => {
+    const query = [];
+    if (status) query.push(`status=${encodeURIComponent(status)}`);
+    if (limit !== undefined) query.push(`limit=${encodeURIComponent(String(limit))}`);
+    return apiFetch<import("@/types").TrainingExamplesPayload>(`/training/examples${query.length ? `?${query.join("&")}` : ""}`);
+  },
+  trainingSettings: () => apiFetch<{ ok: boolean; auto_capture: boolean; message?: string }>("/training/settings"),
+  setTrainingSettings: (body: { auto_capture: boolean }) =>
+    apiFetch<{ ok: boolean; auto_capture: boolean; message?: string }>("/training/settings", { method: "POST", body }),
+  addTrainingExample: (body: { user_text: string; model_reply: string; first_name?: string }) =>
+    apiFetch<import("@/types").TrainingMutationResult>("/training/add", { method: "POST", body }),
+  approveTrainingExample: (id: string) =>
+    apiFetch<import("@/types").TrainingMutationResult>("/training/status", { method: "POST", body: { id, status: "approved" } }),
+  rejectTrainingExample: (id: string) =>
+    apiFetch<import("@/types").TrainingMutationResult>("/training/status", { method: "POST", body: { id, status: "rejected" } }),
+  deleteTrainingExample: (id: string) =>
+    apiFetch<import("@/types").TrainingMutationResult>("/training/delete", { method: "POST", body: { id } }),
+  exportTraining: (status?: string) =>
+    apiFetch<{ ok: boolean; format: string; count: number; content: string; message?: string }>(`/training/export${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   mongoOverview: () => apiFetch<import("@/types").MongoOverviewPayload>("/mongo/overview"),
   inviteOwner: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; token?: string; expires_at?: string; message?: string }>("/owners/invite", { method: "POST", body }),
   verifyGroup: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; message?: string }>("/owners/verify", { method: "POST", body }),
