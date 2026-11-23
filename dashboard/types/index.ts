@@ -177,6 +177,9 @@ export interface UserEntry {
   full_memory: boolean;
   full_memory_since?: string;
   full_memory_by?: number | string;
+  started_bot?: boolean;
+  started_at?: string;
+  language_code?: string;
   chat_file?: string;
   last_focus?: string;
   role?: string;
@@ -193,6 +196,7 @@ export interface UsersPayload {
     mongo_primary: boolean;
     mongo_users?: number;
     stored_turns?: number;
+    started_users?: number;
   };
   message?: string;
 }
@@ -254,6 +258,26 @@ export interface UserMessageResult {
   message?: string;
   user_id?: number;
   message_id?: string;
+}
+
+export interface BroadcastTemplate {
+  id: string;
+  name: string;
+  text: string;
+}
+
+export interface BroadcastTemplatesPayload {
+  ok: boolean;
+  templates: BroadcastTemplate[];
+  message?: string;
+}
+
+export interface UserBroadcastResult {
+  ok: boolean;
+  sent?: number;
+  failed?: number;
+  results?: Array<{ user_id: number; ok: boolean; message_id?: string; error?: string }>;
+  message?: string;
 }
 
 export interface MongoCard {

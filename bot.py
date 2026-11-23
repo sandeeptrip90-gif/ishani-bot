@@ -316,9 +316,103 @@ class DataManager:
                 "chat_file": record.get("chat_file"),
                 "last_focus": record.get("last_focus"),
                 "role": role,
+                "started_bot": bool(record.get("started_bot")),
+                "started_at": record.get("started_at"),
+                "language_code": str(record.get("language_code") or ""),
             })
         users.sort(key=lambda item: (item["full_memory"], item["message_count"]), reverse=True)
         return users
+
+    def mark_started(self, user_id: int, first_name: str = "", username: str = "",
+                     language_code: str = "") -> Dict[str, Any]:
+        """Record the first /start so the dashboard can list real starters."""
+        user_key = str(int(user_id))
+        with self._lock:
+            users = self.data.setdefault("users", {})
+            record = users.get(user_key)
+            if not isinstance(record, dict):
+                record = {
+                    "user_id": int(user_id),
+                    "first_name": first_name or "User",
+                    "message_count": 0,
+                    "last_seen": None,
+                }
+                users[user_key] = record
+            if first_name:
+                record["first_name"] = first_name
+            if username:
+                record["username"] = str(username)
+            if language_code:
+                record["language_code"] = str(language_code)
+            if not record.get("started_bot"):
+                record["started_bot"] = True
+                record["started_at"] = datetime.now().isoformat(timespec="seconds")
+            self.save()
+            return record
+
+    def backfill_started_users(self) -> int:
+        """One-time migration: earlier versions did not record /start explicitly."""
+        if self.data.get("started_backfill_done"):
+            return 0
+        count = 0
+        for record in (self.data.get("users") or {}).values():
+            if not isinstance(record, dict) or record.get("started_bot"):
+                continue
+            record["started_bot"] = True
+            record["started_at"] = record.get("last_seen") or datetime.now().isoformat(timespec="seconds")
+            record["started_source"] = "backfill"
+            count += 1
+        self.data["started_backfill_done"] = True
+        self.save()
+        return count
+
+    def broadcast_templates(self) -> List[Dict[str, Any]]:
+        templates = self.data.get("broadcast_templates")
+        if not isinstance(templates, list):
+            templates = []
+        if not templates and not self.data.get("broadcast_templates_seeded"):
+            templates = [
+                {
+                    "id": "tpl_chelsea_join",
+                    "name": "Chelsea join invite",
+                    "text": "Arre {first_name}! Chelsea family me aane ka time hai ⚽ Free Telegram group hai, match predictions aur discussion roz milta hai. Link chahiye to bas 'group link' bol dena.",
+                },
+                {
+                    "id": "tpl_match_day",
+                    "name": "Match day nudge",
+                    "text": "Haan {first_name}, aaj match hai! Lineups aur prediction group me aa rahe hain. Dekhna hai to Telegram group join kar le — free hai.",
+                },
+                {
+                    "id": "tpl_checkin",
+                    "name": "Friendly check-in",
+                    "text": "{first_name}, kaise ho? Chelsea side ka kya scene hai — koi match ya doubt ho to yahin poochh lo, main batati hoon.",
+                },
+            ]
+            self.data["broadcast_templates_seeded"] = True
+            self.data["broadcast_templates"] = templates
+            self.save()
+        return [item for item in templates if isinstance(item, dict)]
+
+    def add_broadcast_template(self, name: str, text: str) -> List[Dict[str, Any]]:
+        templates = self.broadcast_templates()
+        template = {
+            "id": f"tpl_{int(datetime.now().timestamp() * 1000)}",
+            "name": str(name or "Untitled template")[:80],
+            "text": str(text or "")[:4000],
+        }
+        templates.insert(0, template)
+        self.data["broadcast_templates"] = templates[:50]
+        self.save()
+        return self.data["broadcast_templates"]
+
+    def remove_broadcast_template(self, template_id: str) -> List[Dict[str, Any]]:
+        templates = [
+            item for item in self.broadcast_templates()
+            if str(item.get("id")) != str(template_id)
+        ]
+        self.data["broadcast_templates"] = templates
+        self.save()
+        return templates
     
     def set_pdf_file_id(self, file_id: str):
         """Store PDF file_id"""
@@ -5210,6 +5304,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     first_name = update.effective_user.first_name or "User"
     dm.update_user(update.effective_user.id, first_name)
+    dm.mark_started(
+        update.effective_user.id,
+        first_name=first_name,
+        username=getattr(update.effective_user, "username", "") or "",
+        language_code=getattr(update.effective_user, "language_code", "") or "",
+    )
 
     payload = (context.args[0] if getattr(context, "args", None) else "") or ""
     if str(payload).startswith("join_"):
@@ -5512,6 +5612,38 @@ async def _broadcast_groups_async(actor_id: int, group_ids: List[int], message: 
             item["error"] = str(e)[:200]
         results.append(item)
     dm.record_broadcast(actor_id, "web:groups", results)
+    return results
+
+
+async def _broadcast_users_async(actor_id: int,
+                                 targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Send one master-authored message to each selected user, with real outcomes."""
+    results: List[Dict[str, Any]] = []
+    for target in targets:
+        try:
+            user_id = int(target["user_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = str(target.get("text") or "")
+        item: Dict[str, Any] = {"user_id": user_id, "ok": False, "error": ""}
+        try:
+            sent = await BOT_APP.bot.send_message(chat_id=user_id, text=text)
+            item["ok"] = True
+            message_id = getattr(sent, "message_id", None)
+            if message_id is not None:
+                item["message_id"] = message_id
+            dm.append_chat(
+                user_id,
+                str(target.get("first_name") or "User"),
+                "bot",
+                text,
+                scope="private",
+            )
+        except Exception as e:
+            item["error"] = str(e)[:200]
+        results.append(item)
+        await asyncio.sleep(0.05)
+    dm.record_broadcast(actor_id, "web:users", results)
     return results
 
 
@@ -6126,6 +6258,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                     "mongo_primary": mongo_store.enabled(),
                     "mongo_users": chat_state_users,
                     "stored_turns": sum(turn_counts.values()),
+                    "started_users": sum(1 for item in users if item.get("started_bot")),
                 },
             })
         except Exception as e:
@@ -6402,6 +6535,8 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return self._api_owners()
         if path == "/api/users":
             return self._api_users()
+        if path == "/api/users/templates":
+            return self._api_user_templates()
         if path == "/api/chats/history":
             return self._api_chat_history()
         if path == "/api/chats/search":
@@ -6709,6 +6844,75 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             payload["media_type"] = media["type"]
         return 200, payload
 
+    def _perform_user_broadcast(self, session: Dict[str, Any], data: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Master-only broadcast to selected /start users with optional template."""
+        if session.get("role") != "master":
+            return 403, {"ok": False, "message": "Master owner only."}
+        requested = data.get("user_ids")
+        directory = {int(item["user_id"]): item for item in dm.user_directory()}
+        if requested == "all_started" or requested is None or requested == "":
+            selected = [item for item in directory.values() if item.get("started_bot")]
+        elif isinstance(requested, list):
+            try:
+                ids = [int(value) for value in requested]
+            except (TypeError, ValueError):
+                return 400, {"ok": False, "message": "Invalid user list."}
+            selected = [directory[uid] for uid in ids if uid in directory]
+        else:
+            return 400, {"ok": False, "message": "Invalid user list."}
+        if not selected:
+            return 400, {"ok": False, "message": "No started users selected."}
+
+        text = str(data.get("message") or "").strip()
+        template_id = str(data.get("template_id") or "").strip()
+        if template_id:
+            template = next(
+                (item for item in dm.broadcast_templates() if str(item.get("id")) == template_id),
+                None,
+            )
+            if not template:
+                return 400, {"ok": False, "message": "Template not found."}
+            text = str(template.get("text") or "").strip()
+        if not text:
+            return 400, {"ok": False, "message": "Message text is required."}
+        if len(text) > 4000:
+            return 400, {"ok": False, "message": "Message is too long (4000 char max)."}
+
+        targets: List[Dict[str, Any]] = []
+        for user in selected:
+            values = {
+                "name": str(user.get("first_name") or user["user_id"]),
+                "first_name": str(user.get("first_name") or user["user_id"]),
+                "id": str(user["user_id"]),
+            }
+            targets.append({
+                "user_id": int(user["user_id"]),
+                "first_name": values["first_name"],
+                "text": _render_template(text, values),
+            })
+
+        results = _run_bot_coro(
+            _broadcast_users_async(int(session["user_id"]), targets)
+        )
+        if results is None:
+            return 503, {"ok": False, "message": "Bot is not connected yet; nothing was sent."}
+        sent = sum(1 for item in results if item.get("ok"))
+        return 200, {
+            "ok": True,
+            "sent": sent,
+            "failed": len(results) - sent,
+            "results": results,
+        }
+
+    def _api_user_templates(self):
+        try:
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            return self._json(200, {"ok": True, "templates": dm.broadcast_templates()})
+        except Exception as e:
+            return self._json(500, {"ok": False, "message": str(e)[:300]})
+
     def _perform_group_action(self, session: Dict[str, Any], data: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Shared by /api/group/action and confirmed AI actions."""
         try:
@@ -6819,6 +7023,40 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                 "user_id": user_id,
                 "message_id": message_id,
             })
+        if path == "/api/users/broadcast":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                code, payload = self._perform_user_broadcast(session, data)
+                return self._json(code, payload)
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/users/templates":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                name = str(data.get("name") or "").strip()
+                text = str(data.get("text") or "").strip()
+                if not text:
+                    return self._json(400, {"ok": False, "message": "Template text is required."})
+                templates = dm.add_broadcast_template(name, text)
+                return self._json(200, {"ok": True, "templates": templates})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
+        if path == "/api/users/templates/remove":
+            try:
+                session = self._auth()
+                if not session or session["role"] != "master":
+                    return self._json(403, {"ok": False, "message": "Master owner only."})
+                template_id = str(data.get("id") or "").strip()
+                if not template_id:
+                    return self._json(400, {"ok": False, "message": "Template id is required."})
+                templates = dm.remove_broadcast_template(template_id)
+                return self._json(200, {"ok": True, "templates": templates})
+            except Exception as e:
+                return self._json(500, {"ok": False, "message": str(e)[:300]})
         if path == "/api/config":
             session = self._auth()
             if not session or session["role"] != "master":
@@ -7181,6 +7419,9 @@ async def post_init(app):
     await capture_bot_app(app)
     await configure_command_menu(app)
     mongo_store.seed_all(Path("."))
+    backfilled = dm.backfill_started_users()
+    if backfilled:
+        print(f"👥 Backfilled /start records for {backfilled} existing user(s)", flush=True)
     refresh_prewritten()
     start_prewritten_refresh()
     if tg is not None:

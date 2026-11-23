@@ -72,6 +72,14 @@ export const api = {
     apiFetch<import("@/types").FullMemoryResult>("/users/full-memory", { method: "POST", body }),
   sendUserMessage: (body: { user_id: number; text: string }) =>
     apiFetch<import("@/types").UserMessageResult>("/users/message", { method: "POST", body }),
+  broadcastTemplates: () =>
+    apiFetch<import("@/types").BroadcastTemplatesPayload>("/users/templates"),
+  addBroadcastTemplate: (body: { name: string; text: string }) =>
+    apiFetch<import("@/types").BroadcastTemplatesPayload>("/users/templates", { method: "POST", body }),
+  removeBroadcastTemplate: (body: { id: string }) =>
+    apiFetch<import("@/types").BroadcastTemplatesPayload>("/users/templates/remove", { method: "POST", body }),
+  broadcastUsers: (body: { user_ids: number[] | "all_started"; message: string; template_id?: string }) =>
+    apiFetch<import("@/types").UserBroadcastResult>("/users/broadcast", { method: "POST", body }),
   mongoOverview: () => apiFetch<import("@/types").MongoOverviewPayload>("/mongo/overview"),
   inviteOwner: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; token?: string; expires_at?: string; message?: string }>("/owners/invite", { method: "POST", body }),
   verifyGroup: (body: Record<string, unknown>) => apiFetch<{ ok: boolean; message?: string }>("/owners/verify", { method: "POST", body }),

@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { MongoOverviewPayload, MongoTurn, UserEntry, UsersPayload } from "@/types";
+import type {
+  BroadcastTemplate,
+  MongoOverviewPayload,
+  MongoTurn,
+  UserBroadcastResult,
+  UserEntry,
+  UsersPayload,
+} from "@/types";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { Card } from "@/components/shared/Card";
 import { Button } from "@/components/shared/Button";
@@ -64,13 +71,32 @@ export default function UsersPage() {
   const [busyIds, setBusyIds] = useState<Record<number, boolean>>({});
   const [query, setQuery] = useState("");
 
+  const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
+  const [startedQuery, setStartedQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [broadcastText, setBroadcastText] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplateText, setNewTemplateText] = useState("");
+  const [sendingBroadcast, setSendingBroadcast] = useState(false);
+  const [broadcastResult, setBroadcastResult] = useState<UserBroadcastResult | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
-    const [usersResult, mongoResult] = await Promise.all([api.users(), api.mongoOverview()]);
-    const messages = [usersResult.error, mongoResult.error].filter((message): message is string => Boolean(message));
+    const [usersResult, mongoResult, templatesResult] = await Promise.all([
+      api.users(),
+      api.mongoOverview(),
+      api.broadcastTemplates(),
+    ]);
+    const messages = [
+      usersResult.error,
+      mongoResult.error,
+      templatesResult.error,
+    ].filter((message): message is string => Boolean(message));
     setError(messages.join(" "));
     if (usersResult.data) setUsers(usersResult.data);
     if (mongoResult.data) setOverview(mongoResult.data);
+    if (templatesResult.data) setTemplates(templatesResult.data.templates || []);
     setLoading(false);
   }, []);
 
@@ -93,6 +119,76 @@ export default function UsersPage() {
     void load();
   };
 
+  const chooseTemplate = (id: string) => {
+    setTemplateId(id);
+    const template = templates.find((item) => item.id === id);
+    if (template) setBroadcastText(template.text);
+  };
+
+  const addTemplate = async () => {
+    const text = newTemplateText.trim();
+    if (!text) {
+      setError("Template text is required.");
+      return;
+    }
+    const result = await api.addBroadcastTemplate({ name: newTemplateName.trim(), text });
+    if (result.error || result.data?.ok === false) {
+      setError(result.error || result.data?.message || "Could not save template.");
+      return;
+    }
+    setTemplates(result.data?.templates || []);
+    setNewTemplateName("");
+    setNewTemplateText("");
+    setNotice("Broadcast template saved.");
+  };
+
+  const removeTemplate = async (id: string) => {
+    const result = await api.removeBroadcastTemplate({ id });
+    if (result.error || result.data?.ok === false) {
+      setError(result.error || result.data?.message || "Could not delete template.");
+      return;
+    }
+    setTemplates(result.data?.templates || []);
+    if (templateId === id) {
+      setTemplateId("");
+      setBroadcastText("");
+    }
+    setNotice("Broadcast template deleted.");
+  };
+
+  const toggleSelected = (userId: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  };
+
+  const sendBroadcast = async () => {
+    const text = broadcastText.trim();
+    if (!text && !templateId) {
+      setError("Write a message or choose a template first.");
+      return;
+    }
+    setSendingBroadcast(true);
+    setError("");
+    setNotice("");
+    setBroadcastResult(null);
+    const result = await api.broadcastUsers({
+      user_ids: selectedIds.size ? Array.from(selectedIds) : "all_started",
+      message: text,
+      ...(templateId ? { template_id: templateId } : {}),
+    });
+    setSendingBroadcast(false);
+    if (result.error || result.data?.ok === false) {
+      setError(result.error || result.data?.message || "Broadcast failed.");
+      return;
+    }
+    setBroadcastResult(result.data || null);
+    setNotice(`Broadcast sent to ${result.data?.sent ?? 0} user(s), ${result.data?.failed ?? 0} failed.`);
+  };
+
   const master = users?.role === "master";
   const storage = overview?.storage;
   const cards = overview?.cards;
@@ -105,6 +201,27 @@ export default function UsersPage() {
         .some((value) => String(value || "").toLocaleLowerCase().includes(needle)),
     );
   }, [allUsers, query]);
+
+  const startedUsers = useMemo(() => allUsers.filter((user) => user.started_bot), [allUsers]);
+  const filteredStarted = useMemo(() => {
+    const needle = startedQuery.trim().toLocaleLowerCase();
+    if (!needle) return startedUsers;
+    return startedUsers.filter((user) =>
+      [String(user.user_id), user.first_name, user.username]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(needle)),
+    );
+  }, [startedUsers, startedQuery]);
+  const allFilteredSelected = filteredStarted.length > 0
+    && filteredStarted.every((user) => selectedIds.has(user.user_id));
+
+  const toggleAllFiltered = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) filteredStarted.forEach((user) => next.delete(user.user_id));
+      else filteredStarted.forEach((user) => next.add(user.user_id));
+      return next;
+    });
+  };
 
   return (
     <div className="stack">
@@ -140,6 +257,12 @@ export default function UsersPage() {
           label="Mongo users"
           value={users?.stats.mongo_users ?? cards?.users.unique_users ?? 0}
           foot={`${users?.stats.stored_turns ?? cards?.users.documents ?? 0} stored turns`}
+        />
+        <StatCard
+          icon="checkCircle"
+          label="Started users"
+          value={users?.stats.started_users ?? startedUsers.length}
+          foot={`${users?.stats.total ?? allUsers.length} known users`}
         />
         <StatCard
           icon="robot"
@@ -195,6 +318,181 @@ export default function UsersPage() {
         </p>
       </Card>
 
+      <Card
+        title="Users who started your bot"
+        subtitle={`${startedUsers.length} user${startedUsers.length === 1 ? "" : "s"} started Ishani with /start`}
+      >
+        {startedUsers.length === 0 ? (
+          <EmptyState icon="users" title="No /start records yet">
+            Users will appear here after they send /start. Older users are backfilled on first launch.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="toolbar">
+              <div className="search-box">
+                <Icon name="search" size={16} />
+                <input
+                  value={startedQuery}
+                  onChange={(event) => setStartedQuery(event.target.value)}
+                  placeholder="Search started users..."
+                  aria-label="Search started users"
+                />
+              </div>
+              <Button variant="secondary" size="sm" icon="check" onClick={toggleAllFiltered} disabled={!master}>
+                {allFilteredSelected ? "Clear selection" : "Select filtered"}
+              </Button>
+              <Badge tone={selectedIds.size ? "ok" : "neutral"}>
+                {selectedIds.size} selected · {filteredStarted.length} shown
+              </Badge>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: 36 }}>Select</th>
+                    <th>User</th>
+                    <th>Started</th>
+                    <th>Messages</th>
+                    <th>Last seen</th>
+                    <th>Chat</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredStarted.map((user) => (
+                    <tr key={user.user_id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${user.first_name || user.user_id}`}
+                          checked={selectedIds.has(user.user_id)}
+                          disabled={!master}
+                          onChange={() => toggleSelected(user.user_id)}
+                        />
+                      </td>
+                      <td>
+                        <div className="cell-strong">{user.first_name || user.username || `User ${user.user_id}`}</div>
+                        <div className="cell-sub mono">
+                          {user.user_id}{user.username ? ` · @${user.username}` : ""}
+                        </div>
+                      </td>
+                      <td>{formatDate(user.started_at)}</td>
+                      <td>{user.message_count}</td>
+                      <td>{formatDate(user.last_seen)}</td>
+                      <td>
+                        <Link className="profile-link" href={`/users/${user.user_id}`}>
+                          <Icon name="eye" size={15} /> Open chat
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="section-head" style={{ marginTop: 18 }}>
+              <div>
+                <h2>Mass message broadcast</h2>
+                <p className="muted">
+                  Sends a Telegram DM to selected users. Leave selection empty to target all {startedUsers.length} starters.
+                  Templates support {"{first_name}"}, {"{name}"} and {"{id}"}.
+                </p>
+              </div>
+              {broadcastResult && (
+                <Badge tone="ok">
+                  {broadcastResult.sent} sent · {broadcastResult.failed} failed
+                </Badge>
+              )}
+            </div>
+
+            <div className="grid-2">
+              <div className="col">
+                <label className="cell-sub" htmlFor="broadcast-template">Saved templates</label>
+                <select
+                  id="broadcast-template"
+                  value={templateId}
+                  onChange={(event) => chooseTemplate(event.target.value)}
+                  disabled={!master}
+                >
+                  <option value="">— Write your own message —</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>{template.name}</option>
+                  ))}
+                </select>
+                {templateId && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="trash"
+                    disabled={!master}
+                    onClick={() => void removeTemplate(templateId)}
+                  >
+                    Delete selected template
+                  </Button>
+                )}
+                <div className="row">
+                  <input
+                    value={newTemplateName}
+                    onChange={(event) => setNewTemplateName(event.target.value)}
+                    placeholder="Template name"
+                    aria-label="New template name"
+                    disabled={!master}
+                  />
+                  <Button size="sm" icon="plus" disabled={!master || !newTemplateText.trim()} onClick={() => void addTemplate()}>
+                    Add template
+                  </Button>
+                </div>
+                <textarea
+                  value={newTemplateText}
+                  onChange={(event) => setNewTemplateText(event.target.value)}
+                  placeholder="New template text — use {first_name} for a personal touch"
+                  aria-label="New template text"
+                  rows={3}
+                  maxLength={4000}
+                  disabled={!master}
+                />
+              </div>
+              <div className="col">
+                <label className="cell-sub" htmlFor="broadcast-message">Message to send</label>
+                <textarea
+                  id="broadcast-message"
+                  value={broadcastText}
+                  onChange={(event) => {
+                    setBroadcastText(event.target.value);
+                    setTemplateId("");
+                  }}
+                  placeholder="Type the broadcast message..."
+                  aria-label="Broadcast message"
+                  rows={6}
+                  maxLength={4000}
+                  disabled={!master}
+                />
+                <div className="row">
+                  <Button
+                    icon="broadcast"
+                    loading={sendingBroadcast}
+                    disabled={!master || (!broadcastText.trim() && !templateId)}
+                    onClick={() => void sendBroadcast()}
+                  >
+                    Send to {selectedIds.size ? `${selectedIds.size} selected` : `all ${startedUsers.length}`}
+                  </Button>
+                  <Badge tone="neutral">{broadcastText.length}/4000</Badge>
+                </div>
+                <p className="fineprint">
+                  Real Telegram sends only — no simulated results. Each delivery is recorded in the broadcast log.
+                </p>
+              </div>
+            </div>
+
+            {broadcastResult?.results && broadcastResult.results.some((item) => !item.ok) && (
+              <div className="fineprint">
+                Failures: {broadcastResult.results.filter((item) => !item.ok).slice(0, 10)
+                  .map((item) => `${item.user_id}: ${item.error || "failed"}`).join(" · ")}
+              </div>
+            )}
+          </>
+        )}
+      </Card>
+
       <Card title="Full-memory trusted users" subtitle="Memory trust only — this does not change Telegram permissions">
         {allUsers.length === 0 ? (
           <EmptyState icon="users" title="No known users yet">Users will appear after their first recorded turn.</EmptyState>
@@ -220,6 +518,7 @@ export default function UsersPage() {
                   <thead>
                     <tr>
                       <th>User</th>
+                      <th>Started</th>
                       <th>Messages</th>
                       <th>Mongo turns</th>
                       <th>Last seen</th>
@@ -239,6 +538,11 @@ export default function UsersPage() {
                             <div className="cell-sub mono">
                               {user.user_id}{user.username ? ` · @${user.username}` : ""}
                             </div>
+                          </td>
+                          <td>
+                            <Badge tone={user.started_bot ? "ok" : "neutral"}>
+                              {user.started_bot ? "Yes" : "No"}
+                            </Badge>
                           </td>
                           <td>{user.message_count}</td>
                           <td>{user.logged_turns ?? "—"}</td>
