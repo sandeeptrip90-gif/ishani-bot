@@ -36,18 +36,35 @@ async def _send_paced(msg, text: str) -> None:
 
 
 def _shape_reply(reply: str, is_group: bool, max_lines: int = 4) -> List[str]:
-    """Split long answers on sentence boundaries, not only on newlines.
+    """Split an answer into Telegram-sized messages without dropping sentences.
 
-    A single long line used to lose everything after the first 1000 characters.
-    Sentence-aware chunks keep the full answer readable in DMs and groups alike.
+    Casual replies stay short because the model is asked for short replies. When a
+    complete explanation needs more room, every sentence is delivered instead of
+    being cut after an arbitrary number of chunks or characters.
     """
+    del is_group, max_lines
     lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
     chunks: List[str] = []
     for line in lines:
         parts = re.split(r"(?<=[.!?])\s+(?=[\w\u0900-\u097f])", line)
-        chunks.extend(part.strip() for part in parts if part.strip())
-    limit = max_lines
-    return [chunk[:1000] for chunk in chunks[:limit]]
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if len(part) <= 3900:
+                chunks.append(part)
+                continue
+            words = part.split()
+            current = ""
+            for word in words:
+                if current and len(current) + 1 + len(word) > 3900:
+                    chunks.append(current)
+                    current = word
+                else:
+                    current = f"{current} {word}".strip()
+            if current:
+                chunks.append(current)
+    return chunks
 
 
 async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, context,
@@ -168,10 +185,7 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
         history,
         compact=False,
         group_business=group_business,
-        include_company=bool(re.search(
-            r"\b(chelsea|company|join|signup|sign up|link|earning|profit|deposit|withdraw|prediction|app|service|platform|registration|register)\b",
-            user_text, re.I,
-        )),
+        include_company=b.company_intent(user_text, history),
         user_text=user_text,
     )
     faq_context = [] if fraud_dm else b.faq_context_for(user_text)

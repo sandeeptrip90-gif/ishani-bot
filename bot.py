@@ -485,7 +485,7 @@ class DataManager:
             if str(item.get("status")) == "approved"
         ]
         if not user_text.strip():
-            return approved[:limit]
+            return []
 
         def _tokens(value: str) -> set:
             return {token for token in re.findall(r"[\w\u0900-\u097f]{3,}", str(value or "").lower())
@@ -493,7 +493,7 @@ class DataManager:
 
         query_tokens = _tokens(user_text)
         if not query_tokens:
-            return approved[:limit]
+            return []
 
         scored = []
         for item in approved:
@@ -503,9 +503,11 @@ class DataManager:
             sequence = difflib.SequenceMatcher(
                 None, user_text.lower(), str(item.get("user_text") or "").lower()
             ).ratio()
-            scored.append((ratio + sequence, item))
+            score = ratio + sequence
+            if (overlap > 0 or sequence >= 0.35) and score >= 0.18:
+                scored.append((score, item))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [item for _, item in scored[:limit] if _ > 0] or approved[:limit]
+        return [item for _, item in scored[:limit]]
     
     def set_pdf_file_id(self, file_id: str):
         """Store PDF file_id"""
@@ -1740,34 +1742,75 @@ def resolve_link_request_reply(user_text: str) -> Optional[str]:
 
 
 def relevant_admin_lessons(persona: Optional[Dict[str, Any]], user_text: str, limit: int = 8) -> List[str]:
-    """Retrieve admin lessons relevant to this turn instead of injecting all of them."""
+    """Retrieve relevant admin lessons; global lessons are always eligible."""
     learned = persona.get("learned_from_admin") if isinstance(persona, dict) else None
     if isinstance(learned, str):
         learned = [learned]
     if not isinstance(learned, list):
         learned = []
-    lessons = [str(item).strip() for item in learned if isinstance(item, str) and str(item).strip()]
-    if not lessons:
-        return []
+
+    global_lessons: List[str] = []
+    for key in ("global_lessons", "global_admin_lessons"):
+        value = persona.get(key) if isinstance(persona, dict) else None
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            global_lessons.extend(str(item).strip() for item in value if isinstance(item, str) and str(item).strip())
+
+    relevant_pool: List[str] = []
+    for item in learned:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        text = item.strip()
+        if text.lower().startswith("[global]") or text.lower().startswith("global:"):
+            global_lessons.append(text.split(":", 1)[-1].strip() if ":" in text else text)
+        else:
+            relevant_pool.append(text)
+
+    controls = persona.get("admin_learning_controls") if isinstance(persona, dict) else None
+    if isinstance(controls, dict):
+        value = controls.get("global_lessons")
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            global_lessons.extend(str(item).strip() for item in value if isinstance(item, str) and str(item).strip())
+
+    # De-duplicate while preserving order.
+    seen = set()
+    ordered_global: List[str] = []
+    for lesson in global_lessons:
+        if lesson and lesson not in seen:
+            seen.add(lesson)
+            ordered_global.append(lesson)
+
+    all_original = [str(item).strip() for item in learned if isinstance(item, str) and str(item).strip()]
     if not user_text.strip():
-        return lessons[:limit]
+        return (all_original + [g for g in ordered_global if g not in all_original])[:limit]
 
     def _tokens(value: str) -> set:
-        return {token for token in re.findall(r"[\\w\\u0900-\\u097f]{3,}", str(value or "").lower())}
+        return {token for token in re.findall(r"[\w\u0900-\u097f]{3,}", str(value or "").lower())}
 
     query_tokens = _tokens(user_text)
     if not query_tokens:
-        return lessons[:limit]
+        return ordered_global[:limit]
+
     scored = []
-    for lesson in lessons:
+    for lesson in relevant_pool:
         lesson_tokens = _tokens(lesson)
+        if not lesson_tokens:
+            continue
         overlap = len(query_tokens & lesson_tokens)
         ratio = overlap / max(1, len(query_tokens))
         sequence = difflib.SequenceMatcher(None, user_text.lower(), lesson.lower()).ratio()
-        scored.append((ratio + sequence, lesson))
+        score = ratio + sequence
+        # Require either a real token overlap or a strong textual match. This
+        # prevents unrelated lessons from being injected through weak similarity.
+        if (overlap > 0 or sequence >= 0.35) and score >= 0.2:
+            scored.append((score, lesson))
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    relevant = [lesson for score, lesson in scored if score > 0.08]
-    return (relevant or lessons)[:limit]
+    relevant = [lesson for _, lesson in scored]
+    combined = ordered_global + [lesson for lesson in relevant if lesson not in seen]
+    return combined[:limit]
 
 
 def faq_context_for(user_text: str, limit: int = 5) -> List[Tuple[str, str]]:
@@ -1779,7 +1822,7 @@ def faq_context_for(user_text: str, limit: int = 5) -> List[Tuple[str, str]]:
             continue
         if keyword in {"link", "join", "join link", "group", "telegram"}:
             continue
-        pattern = r"(?<!\\w)" + re.escape(keyword) + r"(?!\\w)"
+        pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
         if re.search(pattern, user_text_lower):
             matches.append((keyword, KEYWORD_RESPONSES[keyword]))
             if len(matches) >= limit:
@@ -2034,6 +2077,30 @@ def company_brief(persona: Optional[Dict[str, Any]] = None, group_business: Opti
     }
     rendered = [_render_template(line, values) for line in lines]
     return "\n".join(part for part in rendered if part)
+
+
+def company_intent(user_text: str, history: Optional[List[Dict[str, Any]]] = None) -> bool:
+    """Detect company questions, including short follow-ups to company turns."""
+    text = str(user_text or "").lower()
+    if re.search(
+        r"\b(chelsea|company|platform|service|services|product|products|join|signup|sign up|"
+        r"registration|register|account|website|site|access|earning|profit|deposit|withdraw|"
+        r"prediction|predictions|app|details|about|info|information|kya hai|kaise)\b",
+        text, re.I,
+    ):
+        return True
+    followup_terms = {
+        "it", "this", "that", "more", "details", "explain", "how", "what", "tell me",
+        "aur batao", "aur bata", "batao", "samjhao", "more info",
+    }
+    if any(term in text for term in followup_terms):
+        recent = " ".join(
+            str(item.get("text") or "") for item in (history or [])[-4:]
+            if isinstance(item, dict)
+        ).lower()
+        if re.search(r"\b(chelsea|company|platform|prediction|deposit|withdraw|earning|profit|signup|join)\b", recent, re.I):
+            return True
+    return False
 
 
 def _safe_ai_endpoint(url: Any) -> str:
