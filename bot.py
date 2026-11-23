@@ -113,19 +113,19 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
 
 
 def _default_ai_config() -> Dict[str, Any]:
-    """AI defaults, seeded from env so ephemeral hosts survive a redeploy.
+    """AI defaults with no hardcoded endpoint, model or key.
 
-    Render's free tier starts each deploy with a fresh data.json. Setting
-    ISHANI_AI_ENDPOINT / ISHANI_AI_MODEL in the service environment keeps the
-    configured model alive without committing any credential to git.
+    An empty config means "not configured": the master must save the endpoint,
+    model and API key from the dashboard. Env seeding is kept only as an
+    optional fresh-deploy override; the service environment no longer sets it.
     """
     endpoint = _normalize_openai_endpoint(os.environ.get("ISHANI_AI_ENDPOINT") or "")
     model = (os.environ.get("ISHANI_AI_MODEL") or "").strip()
     return {
         "provider": "custom",
-        "endpoint": endpoint or "http://127.0.0.1:11434/v1",
-        "api_key": "123",
-        "model": model or "gptoss-20b",
+        "endpoint": endpoint,
+        "api_key": "",
+        "model": model,
     }
 
 
@@ -1095,8 +1095,8 @@ async def call_custom_openai(
     cfg = dm.get_ai_config()
     url = _openai_chat_url(cfg.get("endpoint", ""))
     api_key = cfg.get("api_key") or ""
-    model = (cfg.get("model") or "").strip() or "gptoss-20b"
-    if not url or not api_key:
+    model = (cfg.get("model") or "").strip()
+    if not url or not api_key or not model:
         raise RuntimeError("Custom AI provider is not configured")
 
     sampling = _model_sampling(model)
@@ -5888,8 +5888,8 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             cfg = dm.get_ai_config()
             self._json(200, {
                 "ok": True,
-                "endpoint": cfg.get("endpoint") or "http://127.0.0.1:11434/v1",
-                "model": cfg.get("model") or "gptoss-20b",
+                "endpoint": cfg.get("endpoint") or "",
+                "model": cfg.get("model") or "",
                 "has_key": bool(cfg.get("api_key")),
             })
             return
@@ -6484,10 +6484,12 @@ def _test_openai_connection(data: dict) -> dict:
     api_key = (data.get("api_key") or "").strip()
     if _is_masked_key(api_key):
         api_key = cfg.get("api_key") or ""
-    model = (data.get("model") or cfg.get("model") or "").strip() or "gptoss-20b"
+    model = (data.get("model") or cfg.get("model") or "").strip()
     url = _openai_chat_url(endpoint)
     if not url:
         return {"ok": False, "message": "Enter a custom API endpoint."}
+    if not model:
+        return {"ok": False, "message": "Enter a model name."}
     if not api_key:
         return {"ok": False, "message": "Enter an API key."}
     try:

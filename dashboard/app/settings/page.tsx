@@ -121,8 +121,8 @@ export default function SettingsPage() {
             <EmptyState icon="shield" title="Master Owner only">Model configuration is hidden from Group Owners.</EmptyState>
           ) : (
             <>
-              <div className="field"><label>Endpoint</label><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="http://127.0.0.1:11434/v1" /></div>
-              <div className="field"><label>Model</label><input value={model} onChange={(event) => setModel(event.target.value)} placeholder="e.g. qwen35-9b-mtp" /></div>
+              <div className="field"><label>Endpoint</label><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://your-endpoint.example/v1" /></div>
+              <div className="field"><label>Model</label><input value={model} onChange={(event) => setModel(event.target.value)} placeholder="Exact model name" /></div>
               <div className="field">
                 <label>API key {config?.has_key ? "(one is already stored — leave blank to keep)" : ""}</label>
                 <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" />
