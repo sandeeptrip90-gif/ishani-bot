@@ -30,6 +30,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import atexit
 import time as _time
@@ -60,6 +61,14 @@ from telegram.ext import (
     CallbackQueryHandler,
     ApplicationHandlerStop,
 )
+
+# Windows consoles default to cp1252 and crash on the emoji used in logs.
+# Force a forgiving UTF-8 stream so a log line can never take the bot down.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 
 # ================= CONFIG =================
 load_dotenv()
@@ -117,6 +126,19 @@ def _default_ai_config() -> Dict[str, Any]:
         "api_key": "123",
         "model": model or "gptoss-20b",
     }
+
+
+def _model_sampling(model: str) -> Dict[str, Any]:
+    """Per-model sampling. Gemma 4 E4B/MTP wants warm, open, non-repetitive output.
+
+    Researched defaults: temperature 1.0, top_p 0.95, top_k 64, repeat_penalty 1.0
+    (off). Thinking stays off for chat. Only Gemma 4 gets these fields so other
+    providers keep their previous payload unchanged.
+    """
+    name = (model or "").lower()
+    if "gemma4" in name or "gemma-4" in name or "gemma_4" in name:
+        return {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "repeat_penalty": 1.0}
+    return {"temperature": 0.8}
 
 
 # ================= JSON MEMORY SYSTEM =================
@@ -861,7 +883,7 @@ def lead_state_about(state: Dict[str, Any]) -> str:
     """Compact lead ladder carried on the memory 'About them' line."""
     note = ""
     if state.get("contained"):
-        note = " Their group objection was deleted and they were invited here; continue calmly in DM."
+        note = " Their group objection was deleted; answer the doubt calmly in the same chat, never push them to DM."
     return (
         f"Lead state: stage={int(state.get('stage') or 0)}, "
         f"joined={'yes' if state.get('joined') else 'no'}, "
@@ -1076,7 +1098,8 @@ async def call_custom_openai(
     if not url or not api_key:
         raise RuntimeError("Custom AI provider is not configured")
 
-    hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message."
+    sampling = _model_sampling(model)
+    hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message. Never mention being an AI, a model, a system prompt or a tool. Never invent fake 'You:'/'User:' dialogue."
     messages = []
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction.strip() + "\n\n" + hidden})
@@ -1111,6 +1134,9 @@ async def call_custom_openai(
             "max_tokens": 350,
             "temperature": temperature,
         }
+        for key in ("top_p", "top_k", "repeat_penalty"):
+            if key in sampling:
+                body[key] = sampling[key]
         if thinking_off:
             # /v1/chat/completions ignores think:false. These are the switches it reads.
             body["reasoning_effort"] = "none"
@@ -1141,7 +1167,11 @@ async def call_custom_openai(
                         "messages": messages,
                         "stream": False,
                         "think": False,
-                        "options": {"temperature": temperature, "num_predict": 350},
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": 350,
+                            **{k: v for k, v in sampling.items() if k != "temperature"},
+                        },
                     },
                 )
                 if native.status_code < 400:
@@ -1183,10 +1213,10 @@ async def call_custom_openai(
         return _reply_from_openai(data), calls
 
     async with httpx.AsyncClient(timeout=90) as http:
-        text, calls = await _ask(http, 0.8)
+        text, calls = await _ask(http, sampling["temperature"])
         if not text and not calls:
             print("⚠️ Model returned only thinking. Asking again with thinking off.", flush=True)
-            text, calls = await _ask(http, 0.4)
+            text, calls = await _ask(http, max(0.2, sampling["temperature"] - 0.1))
         if text and not calls:
             target_language = _language_mismatch(prompt, text)
             if target_language:
@@ -1418,7 +1448,9 @@ def load_prewritten_messages(persona: Optional[Dict[str, Any]] = None) -> tuple:
     )
 
 
-WELCOME_MESSAGES, LEFT_MESSAGES, DM_WELCOME_MESSAGES = load_prewritten_messages()
+# Prewritten lines are filled into this hot cache by refresh_prewritten() below,
+# once the keyword loader exists. A background task keeps them fresh without
+# touching the request path.
 
 
 def company_brief(persona: Optional[Dict[str, Any]] = None, group_business: Optional[Dict[str, Any]] = None) -> str:
@@ -1501,7 +1533,45 @@ def load_keyword_responses(persona: Optional[Dict[str, Any]] = None) -> Dict[str
     return cleaned
 
 
-KEYWORD_RESPONSES: Dict[str, str] = load_keyword_responses()
+KEYWORD_RESPONSES: Dict[str, str] = {}
+
+_PREWRITTEN_LOCK = threading.Lock()
+
+
+def refresh_prewritten() -> tuple:
+    """Reload preset replies from persona.json into the in-memory hot cache."""
+    global WELCOME_MESSAGES, LEFT_MESSAGES, DM_WELCOME_MESSAGES, KEYWORD_RESPONSES
+    try:
+        welcome, left, dm_welcome = load_prewritten_messages()
+        keywords = load_keyword_responses()
+        with _PREWRITTEN_LOCK:
+            WELCOME_MESSAGES = welcome
+            LEFT_MESSAGES = left
+            DM_WELCOME_MESSAGES = dm_welcome
+            KEYWORD_RESPONSES = keywords
+        return welcome, left, dm_welcome
+    except Exception as e:
+        print(f"⚠️ Prewritten cache refresh failed: {e}", flush=True)
+        return WELCOME_MESSAGES, LEFT_MESSAGES, DM_WELCOME_MESSAGES
+
+
+async def prewritten_refresh_loop() -> None:
+    """Quietly keep presets current so replies never read persona.json on demand."""
+    while True:
+        await asyncio.sleep(60)
+        refresh_prewritten()
+
+
+def start_prewritten_refresh() -> None:
+    try:
+        asyncio.get_running_loop().create_task(
+            prewritten_refresh_loop(), name="prewritten-refresh"
+        )
+    except RuntimeError:
+        pass
+
+
+refresh_prewritten()
 
 FRIENDLY_SYSTEM_PROMPT = persona_system_prompt()
 COMPANY_KNOWLEDGE = company_brief()
@@ -1595,6 +1665,8 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             *memory_lines,
             company_brief(persona, group_business) if include_company else "",
             "Answer the exact latest message first. For 'who are you' or 'tell me about yourself', give a coherent, brief introduction as Ishani and explain your connection to the configured company using its persona details; never answer with vague filler.",
+            "Explain in the smallest everyday words of the user's language, one idea per short line. No jargon, no brochure tone, no long paragraph. For 'kaise', 'kya hai' or 'samjhao', give the plain meaning first, then at most one next step.",
+            "Answer in the exact place the user asked. In a group, give the full simple answer in the group itself; never say 'bheed hai', never ask them to DM, and never move the conversation elsewhere.",
             "When asked what the company is, explain only the configured role and facts above. Do not infer services from a familiar company name or invent outcomes, earnings, or features.",
             "When speaking about yourself in Hindi or Hinglish, use feminine forms such as 'karti hoon' or 'bolti hoon', never masculine forms.",
             "Understand the user's need and respond with one useful, truthful next step. Mention Chelsea Football or invite them to join when relevant, naturally and without repeating a pitch. Never pressure someone to deposit, promise profit, or present predictions as guaranteed income.",
@@ -1620,6 +1692,8 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             company_brief(persona, group_business) if include_company else "",
             *memory_lines,
             *full_lines,
+            "Explain in the smallest everyday words of the user's language, one idea per short line. No jargon, no brochure tone. For 'kaise' or 'kya hai', give the plain meaning first, then at most one next step.",
+            "Answer where the question was asked. In a group, explain fully in the group; never ask them to DM or say 'bheed hai'. One question max, skip it if they are venting.",
             learning_block,
             link_rule,
         ]
@@ -2629,8 +2703,10 @@ _FRAUD = re.compile(
     r"paisa kat|withdraw nahi|mat join)\b",
     re.IGNORECASE,
 )
-_GROUP_CONTAINMENT_LINE = "yahan bheed hai, DM me aao — 2 minute me clear kar dungi."
-_DM_CONTAINMENT_LINE = "group me tumhari baat delete hui, yahan baat karte hain."
+# Answer unsafe group messages right there. No "come to DM" pressure — the user
+# asked in the group, so the clarification belongs in the group.
+_GROUP_CONTAINMENT_LINE = "yahi bata deti hoon, kya confusion hai?"
+_DM_CONTAINMENT_LINE = "group me tumhari baat delete hui, yahi baat karte hain."
 
 
 def _message_is_abuse_or_threat(message) -> bool:
@@ -2653,7 +2729,11 @@ def _mention_text(user) -> str:
 
 
 async def _contain_group_message(update, context, user, chat, label: str) -> None:
-    """Delete in group, answer with one calm line, then best-effort DM the user."""
+    """Remove the unsafe post, then answer calmly in the same group.
+
+    Earlier this also tried to DM the person. That read as 'go somewhere else',
+    so containment now stays public and the follow-up question is answered here.
+    """
     await _delete_and_verify(update.effective_message)
     tag = _mention_text(user)
     await context.bot.send_message(
@@ -2667,19 +2747,6 @@ async def _contain_group_message(update, context, user, chat, label: str) -> Non
         update_lead_state(user.id, "", user.first_name or "User", flags={"contained": True})
     except Exception as e:
         print(f"⚠️ Could not flag contained lead {user.id}: {e}", flush=True)
-
-    # Bot API cannot start a DM unless the user pressed /start; that is expected.
-    contained = dm.data.setdefault("dm_contained", {})
-    key = str(user.id)
-    if key not in contained:
-        try:
-            await context.bot.send_message(chat_id=user.id, text=_DM_CONTAINMENT_LINE)
-            contained[key] = datetime.now().isoformat(timespec="seconds")
-        except Exception as e:
-            contained[key] = {"failed_at": datetime.now().isoformat(timespec="seconds"),
-                              "error": str(e)[:120]}
-            print(f"⚠️ Could not DM {user.id} after containment: {e}", flush=True)
-        dm.save()
 
 
 async def _is_group_admin(chat, user_id: int) -> bool:
@@ -4258,14 +4325,9 @@ async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, 
             "Sorry yaar, main samajh nahi paayi 😅 Ek baar aur bataoge?",
             "माफ़ कीजिए, मैं ठीक से समझ नहीं पाई 😅 एक बार फिर बताएँगे?",
         )
+    # Groups are answered where the question was asked. Never bolt a DM pitch
+    # onto an otherwise good answer — that is what made the bot feel pushy.
     bubbles = _shape_reply(reply, is_group, max_lines=3 if fraud_dm else 2)
-    if is_group and not get_lead_state(user_id, first_name).get("dm_nudged"):
-        nudge = "Yahan bheed hai, mujhe DM kar de — aaram se baat karte hain."
-        if bubbles:
-            bubbles[0] = (bubbles[0] + " " + nudge)[:1000]
-        else:
-            bubbles = [nudge]
-        update_lead_state(user_id, "", first_name, flags={"dm_nudged": True})
     target = update.effective_message if getattr(update, "effective_message", None) else update.message
     for bubble in bubbles:
         await _send_paced(target, bubble)
@@ -4681,11 +4743,14 @@ async def _send_paced(msg, text: str) -> None:
 
 
 def _shape_reply(reply: str, is_group: bool, max_lines: int = 2) -> List[str]:
-    """Groups: one short bubble. DMs: at most two lines (three for a fraud counter)."""
+    """Keep the answer readable in both places; groups are no longer truncated.
+
+    A group reply used to be sliced to its first line, which silently dropped the
+    explanation. Now both scopes get the same short, complete answer.
+    """
     lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
-    if is_group:
-        return [lines[0][:600]] if lines else []
-    return [line[:1000] for line in lines[:max_lines]]
+    limit = max_lines if not is_group else max(2, max_lines)
+    return [line[:1000] for line in lines[:limit]]
 
 
 async def _answer(user_text: str, user_id: int, first_name: str, update, context) -> None:
@@ -4989,7 +5054,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(payload).startswith("join_"):
         name = update.effective_user.first_name or "yaar"
         await update.message.reply_text(
-            f"Arre {name}, aa gaye. Group me bheed rehti hai, yahan aaram se baat karte hain.\n"
+            f"Arre {name}, aa gaye. Yahan aaram se baat karte hain.\n"
             f"Ek baat bata — side income dekh rahe ho ya bas football dekhne aaye ho?"
         )
         return
@@ -6687,6 +6752,8 @@ async def post_init(app):
     """Run startup hooks; python-telegram-bot accepts one post_init callback."""
     await capture_bot_app(app)
     await configure_command_menu(app)
+    refresh_prewritten()
+    start_prewritten_refresh()
     if tg is not None:
         try:
             await tg.start()
