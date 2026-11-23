@@ -100,7 +100,10 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
                              scope=chat_scope)
             return
 
-    keyword_reply = None if fraud_dm else b.get_keyword_response(user_text)
+    # The learned/canonical link rule is authoritative and must be resolved before
+    # the static FAQ cache, which still contains the older Telegram join link.
+    learned_link_reply = b.resolve_link_request_reply(user_text)
+    keyword_reply = None if fraud_dm else (learned_link_reply or b.get_keyword_response(user_text))
     if keyword_reply:
         reply = b.apply_admin_link_controls(b.clean_reply_text(keyword_reply))
         if reply:

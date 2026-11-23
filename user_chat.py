@@ -41,10 +41,21 @@ def start_dm_intro(name: str) -> str:
 
 def dm_system_addendum(fraud_dm: bool, has_media_type: bool) -> str:
     """DM-only rules appended to the shared system prompt."""
+    b = _b()
     parts = [
         "PRIVATE DM: answer directly in simple words. Only nudge when they ask; "
         "never repeat the same ask and never tell them to go back to the group."
     ]
+    controls = b.load_persona().get("admin_learning_controls") or {}
+    blocked = {str(url).strip().casefold() for url in (controls.get("blocked_links") or []) if str(url).strip()}
+    canonical = b._canonical_platform_link()
+    if canonical and not controls.get("block_all_links") and canonical.casefold() not in blocked:
+        parts.append(
+            "LINK RULE: send the configured platform link for any general, platform, signup, "
+            f"registration, account or website link request ({canonical}). Use the Telegram "
+            f"join link ({b._canonical_join_link()}) only when they explicitly ask for the "
+            "group/Telegram/join link. Never swap them."
+        )
     if has_media_type:
         parts.append(
             "If the user asks for a file that is not among the files actually sent in this chat, "

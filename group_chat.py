@@ -112,6 +112,16 @@ def group_system_addendum(chat, links_allowed) -> str:
     ]
     if links_allowed is False:
         parts.append("Links are not permitted in this group. Explain without sharing any link.")
+    controls = b.load_persona().get("admin_learning_controls") or {}
+    blocked = {str(url).strip().casefold() for url in (controls.get("blocked_links") or []) if str(url).strip()}
+    canonical = b._canonical_platform_link()
+    if canonical and links_allowed is not False and not controls.get("block_all_links") and canonical.casefold() not in blocked:
+        parts.append(
+            "LINK RULE: send the configured platform link for any general, platform, signup, "
+            f"registration, account or website link request ({canonical}). Use the Telegram "
+            f"join link ({b._canonical_join_link()}) only when they explicitly ask for the "
+            "group/Telegram/join link. Never swap them."
+        )
     if b.dm.get_group_business(getattr(chat, "id", 0)).get("welcome_message"):
         parts.append("This group has its own welcome note; stay consistent with it.")
     return "\n".join(parts)

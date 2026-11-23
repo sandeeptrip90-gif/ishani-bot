@@ -1312,16 +1312,117 @@ KEYWORD_RESPONSES: Dict[str, str] = {}
 ALLOWED_LINKS = [
 ]
 
-# ========== SMART KEYWORD DETECTOR ==========
+# ========== LINK INTENT + SMART KEYWORD DETECTOR ==========
+_LINK_GROUP_RE = re.compile(
+    r"\b(group|groups|telegram|t\.me|join link|group link|community|channel|channal)\b",
+    re.IGNORECASE,
+)
+_LINK_PLATFORM_RE = re.compile(
+    r"\b(platform|signup|sign up|registration|register|account|website|site|access|"
+    r"chelseafootball\.online|access/signup)\b",
+    re.IGNORECASE,
+)
+_LINK_WORD_RE = re.compile(r"\b(links?|urls?)\b", re.IGNORECASE)
+_LINK_ASK_RE = re.compile(
+    r"\b(do|de|dena|bhej|bhejo|bhejiye|send|chahiye|chaahie|mange|mangte|mil|milega|"
+    r"dikhao|kya|kaunsa|konsa|provide|share|dedo|de do)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_link(value: Any) -> str:
+    """Trim a saved URL without breaking query strings like ?id=458884."""
+    return str(value or "").strip().rstrip(".,!?;:)]}\"'")
+
+
+def _canonical_platform_link(persona: Optional[Dict[str, Any]] = None) -> str:
+    """Return the authoritative platform/signup link from persona.json."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    company = source.get("company") if isinstance(source, dict) else None
+    if not isinstance(company, dict):
+        company = {}
+    url = _clean_link(company.get("platform_link"))
+    if not url:
+        controls = source.get("admin_learning_controls") if isinstance(source, dict) else None
+        if isinstance(controls, dict):
+            url = _clean_link(controls.get("preferred_link"))
+    return url
+
+
+def _canonical_join_link(persona: Optional[Dict[str, Any]] = None) -> str:
+    """Return the Telegram group link, kept separate from the platform link."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    company = source.get("company") if isinstance(source, dict) else None
+    if not isinstance(company, dict):
+        company = {}
+    return _clean_link(company.get("join_link")) or "https://t.me/+Qv2p0w48dy81NDFl"
+
+
+def _link_controls_allow(url: str, persona: Optional[Dict[str, Any]] = None) -> bool:
+    """Explicit admin link blocks still win over the canonical link."""
+    source = persona if isinstance(persona, dict) else load_persona()
+    controls = source.get("admin_learning_controls") if isinstance(source, dict) else None
+    if not isinstance(controls, dict):
+        return True
+    if controls.get("block_all_links"):
+        return False
+    blocked = {_clean_link(item).casefold() for item in (controls.get("blocked_links") or []) if str(item).strip()}
+    return _clean_link(url).casefold() not in blocked
+
+
+def _link_request_kind(text: str) -> str:
+    """Classify a link ask: 'group', 'platform', 'general' or 'none'."""
+    raw = str(text or "")
+    if not raw.strip():
+        return "none"
+    group = bool(_LINK_GROUP_RE.search(raw))
+    platform = bool(_LINK_PLATFORM_RE.search(raw))
+    link_word = bool(_LINK_WORD_RE.search(raw))
+    ask = bool(_LINK_ASK_RE.search(raw))
+
+    if group and not platform:
+        return "group"
+    if platform and (link_word or ask):
+        return "platform"
+    if link_word and ask:
+        return "general"
+    return "none"
+
+
+def resolve_link_request_reply(user_text: str) -> Optional[str]:
+    """Deterministic learned-link answer, checked before the static FAQ cache."""
+    kind = _link_request_kind(user_text)
+    if kind not in ("platform", "general"):
+        return None
+    persona = load_persona()
+    url = _canonical_platform_link(persona)
+    if not url or not _link_controls_allow(url, persona):
+        return None
+    print("✅ Authoritative platform link reply (saved API call!)", flush=True)
+    return f"yeh le: {url}"
+
+
 def get_keyword_response(user_text: str) -> Optional[str]:
-    """Check if user text matches any keyword"""
-    user_text_lower = user_text.lower()
-    
-    for keyword, response in KEYWORD_RESPONSES.items():
-        if keyword in user_text_lower:
+    """Check the authoritative link rule first, then fast keyword FAQ."""
+    user_text_lower = str(user_text or "").lower()
+
+    # A learned/canonical platform link must beat the older Telegram FAQ.
+    authoritative_link = resolve_link_request_reply(user_text)
+    if authoritative_link:
+        return authoritative_link
+    if _link_request_kind(user_text) == "platform":
+        # No saved platform link: let the persona prompt explain, never fall back
+        # to the group join link for a platform/signup question.
+        return None
+
+    # Longest phrase first avoids "join" stealing "join link", and word
+    # boundaries stop "hi" from matching inside "chahiye" or "bhejiye".
+    for keyword in sorted(KEYWORD_RESPONSES, key=len, reverse=True):
+        pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
+        if re.search(pattern, user_text_lower):
             print(f"✅ Keyword match: '{keyword}' (saved API call!)")
-            return response
-    
+            return KEYWORD_RESPONSES[keyword]
+
     return None
 
 # ========== COMPREHENSIVE LINK DETECTION ==========
@@ -1453,6 +1554,7 @@ def company_brief(persona: Optional[Dict[str, Any]] = None, group_business: Opti
     if isinstance(group_business, dict):
         company = dict(company)
         for source_key, target_key in (("name", "name"), ("join_link", "join_link"),
+                                       ("platform_link", "platform_link"),
                                        ("end_goal", "end_goal"), ("notes", "rule")):
             override = group_business.get(source_key)
             if isinstance(override, str) and override.strip():
@@ -1493,6 +1595,7 @@ def company_brief(persona: Optional[Dict[str, Any]] = None, group_business: Opti
         "role": company.get("role") or "",
         "end_goal": company.get("end_goal") or defaults.get("end_goal") or "Get them to join Chelsea Football, then start with ₹200 and follow predictions.",
         "join_link": company.get("join_link") or defaults.get("join_link") or "https://t.me/+Qv2p0w48dy81NDFl",
+        "platform_link": company.get("platform_link") or defaults.get("platform_link") or _canonical_platform_link(source),
         "join_steps": "\n".join(f"{prefix}{item}" for item in steps),
         "facts": "\n".join(f"{prefix}{item}" for item in facts),
         "rule": company.get("rule") or "",
@@ -1635,24 +1738,56 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "You are Ishani Sharma, 23, on Telegram. Reply in short, natural Hinglish. Send only the reply."
         ]
 
+    learned = persona.get("learned_from_admin") or []
+    if isinstance(learned, str):
+        learned = [learned]
+    learned_lines = [
+        f"- {item.strip()}" for item in learned if isinstance(item, str) and item.strip()
+    ]
+    controls = persona.get("admin_learning_controls") or {}
+    if not isinstance(controls, dict):
+        controls = {}
+
+    # Put the live admin rules at the top AND the bottom. Small local models tend
+    # to obey the beginning and end of a prompt more reliably than the middle.
+    authority_parts: List[str] = []
+    canonical_link = _canonical_platform_link(persona)
+    join_link = _canonical_join_link(persona)
+    if controls.get("block_all_links"):
+        authority_parts.append(
+            "FINAL AUTHORITY — LINKS: the admin blocked all links. Explain things in words "
+            "only; do not output any URL or link."
+        )
+    elif controls.get("blocked_links"):
+        authority_parts.append(
+            "FINAL AUTHORITY — LINKS: never repeat any URL the admin has blocked."
+        )
+    elif canonical_link:
+        authority_parts.append(
+            "FINAL AUTHORITY — LINKS: a platform/signup/registration/account/website/general "
+            f"link request must get exactly {canonical_link}. An explicit Telegram/group/join "
+            f"link request must get {join_link}. Never swap them, never give the group link "
+            "for a platform request, and never guess another URL."
+        )
+    if learned_lines:
+        authority_parts.append(
+            "FINAL AUTHORITY — ADMIN LESSONS (override every earlier persona, company or "
+            "FAQ line):\n" + "\n".join(learned_lines)
+        )
+    authority_block = "\n".join(authority_parts)
+    final_check = (
+        "FINAL CHECK: obey every FINAL AUTHORITY block even if it conflicts with an earlier "
+        "persona, company, ladder or FAQ line. Answer only the latest message in its exact "
+        "language and send only the reply."
+    )
+
     if compact:
-        learned = persona.get("learned_from_admin") or []
-        if isinstance(learned, str):
-            learned = [learned]
-        learning_block = (
-            "Latest admin instructions (follow these over earlier persona/company guidance):\n"
-            + "\n".join(f"- {item}" for item in learned if isinstance(item, str) and item.strip())
-            if learned else ""
-        )
-        controls = persona.get("admin_learning_controls") or {}
-        link_rule = "Admin instruction: do not output URLs or links." if controls.get("block_all_links") else (
-            "Admin instruction: do not repeat any specific URL the admin has blocked." if controls.get("blocked_links") else ""
-        )
         # Local models have a smaller prompt budget. Keep the actionable persona,
         # the user's memory and the company facts together instead of truncating
         # the company details or the final response rules from the middle.
         parts = [
             *compact_lines,
+            authority_block,
             *memory_lines,
             company_brief(persona, group_business) if include_company else "",
             "Answer the exact latest message first. For 'who are you' or 'tell me about yourself', give a coherent, brief introduction as Ishani and explain your connection to the configured company using its persona details; never answer with vague filler.",
@@ -1662,31 +1797,20 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "When speaking about yourself in Hindi or Hinglish, use feminine forms such as 'karti hoon' or 'bolti hoon', never masculine forms.",
             "Understand the user's need and respond with one useful, truthful next step. Mention Chelsea Football or invite them to join when relevant, naturally and without repeating a pitch. Never pressure someone to deposit, promise profit, or present predictions as guaranteed income.",
             "Use only company features, amounts, steps and links stated above. Match the latest message's language and script exactly: English to English, Roman Hindi to Roman Hindi, Devanagari to Devanagari, even if earlier turns used another language. Never expose internal reasoning; send only the final reply.",
-            learning_block,
-            link_rule,
+            authority_block,
+            final_check,
         ]
     else:
-        learned = persona.get("learned_from_admin") or []
-        if isinstance(learned, str):
-            learned = [learned]
-        learning_block = (
-            "Latest admin instructions (follow these over earlier persona/company guidance):\n"
-            + "\n".join(f"- {item}" for item in learned if isinstance(item, str) and item.strip())
-            if learned else ""
-        )
-        controls = persona.get("admin_learning_controls") or {}
-        link_rule = "Admin instruction: do not output URLs or links." if controls.get("block_all_links") else (
-            "Admin instruction: do not repeat any specific URL the admin has blocked." if controls.get("blocked_links") else ""
-        )
         parts = [
             (persona.get("master_prompt") or FRIENDLY_SYSTEM_PROMPT).strip(),
+            authority_block,
             company_brief(persona, group_business) if include_company else "",
             *memory_lines,
             *full_lines,
             "Explain in the smallest everyday words of the user's language, one idea per short line. No jargon, no brochure tone. For 'kaise' or 'kya hai', give the plain meaning first, then at most one next step.",
             "Answer where the question was asked. In a group, explain fully in the group; never ask them to DM or say 'bheed hai'. One question max, skip it if they are venting.",
-            learning_block,
-            link_rule,
+            authority_block,
+            final_check,
         ]
     return "\n".join(part for part in parts if part)
 
@@ -2319,6 +2443,70 @@ _LEARN_URL = re.compile(
     re.IGNORECASE,
 )
 _LEARN_DELETE = re.compile(r"^\s*(?:forget|delete|remove|unlearn|erase)\b\s*:?[ \t]*(.*)$", re.IGNORECASE | re.DOTALL)
+_LEARN_PLATFORM_LINK = re.compile(
+    r"\b(?:platform|signup|sign up|registration|register|account|website|site|access)\b"
+    r"[\s,:-]{0,24}\b(?:links?|urls?)\b|"
+    r"\b(?:links?|urls?)\b[\s,:-]{0,24}\b(?:platform|signup|sign up|registration|register|account|website|site|access)\b",
+    re.IGNORECASE,
+)
+_LEARN_SAVE_VERB = re.compile(
+    r"\b(save|sav|store|remember|set|use|send|bhej|bhejo|bhejiye|dena|dedo|de do|rakh|rakho|kar|kr|karke|krke)\b",
+    re.IGNORECASE,
+)
+_LEARN_NEGATIVE = re.compile(
+    r"\b(block|ban|avoid|no|not|never|don'?t|dont|mat|nahi|na)\b", re.IGNORECASE
+)
+
+
+def _save_platform_link(url: str) -> Dict[str, Any]:
+    """Store the admin's platform/signup URL as an authoritative persona field."""
+    persona = load_persona()
+    if not str(persona.get("master_prompt") or "").strip():
+        raise RuntimeError("persona.json master_prompt is missing - refusing to change lessons")
+
+    clean = _clean_link(url)
+    if not clean:
+        return {"action": "not_found", "count": 0}
+
+    old = _canonical_platform_link(persona)
+    company = persona.get("company")
+    if not isinstance(company, dict):
+        company = persona["company"] = {}
+    company["platform_link"] = clean
+
+    controls = persona.get("admin_learning_controls")
+    if not isinstance(controls, dict):
+        controls = persona["admin_learning_controls"] = {}
+    controls["preferred_link"] = clean
+    controls["block_all_links"] = False
+    controls["blocked_links"] = [
+        item for item in (controls.get("blocked_links") or [])
+        if _clean_link(item).casefold() != clean.casefold()
+    ]
+
+    learned = persona.get("learned_from_admin")
+    if isinstance(learned, str):
+        learned = persona["learned_from_admin"] = [learned]
+    elif not isinstance(learned, list):
+        learned = persona["learned_from_admin"] = []
+    # Replace older raw platform-link lessons so the prompt stays short and exact.
+    learned[:] = [
+        item for item in learned
+        if not (
+            isinstance(item, str)
+            and _LEARN_PLATFORM_LINK.search(item)
+            and (_LEARN_URL.search(item) or (old and old in item))
+        )
+    ]
+    rule = (
+        f"Platform link {clean}. Jab koi bhi link/signup/registration link maange, yahi bhejo. "
+        "Telegram/group/join link maange to join link hi bhejo."
+    )
+    if rule not in learned:
+        learned.append(rule)
+
+    _atomic_write_json(PERSONA_PATH, persona)
+    return {"action": "platform_link_saved", "count": 1, "url": clean}
 
 
 def _save_persona_learning(instruction: str) -> Dict[str, Any]:
@@ -2466,7 +2654,10 @@ def _learning_view() -> str:
     else:
         lines.append("Abhi koi saved lesson nahi hai.")
     blocked = controls.get("blocked_links") or []
-    lines.append("\n<b>🔗 Link restrictions</b>")
+    lines.append("\n<b>🔗 Link rules</b>")
+    platform = _canonical_platform_link(persona)
+    if platform:
+        lines.append("Platform link: " + html.escape(platform))
     lines.append(f"Block all links: {'yes' if controls.get('block_all_links') else 'no'}")
     if blocked:
         lines.append("Blocked links: " + html.escape(", ".join(str(url) for url in blocked[:10])[:400]))
@@ -2515,30 +2706,59 @@ def parse_learning_intent(text: str) -> Dict[str, Any]:
             }
         return {"action": "update_last", "steps": ["forget last lesson"],
                 "summary": "Replace the most recent saved lesson."}
+    # "https://... platform link sav kr lo, koi bhi link maange to yahi bhejna"
+    # is one authoritative link save, not a generic free-text instruction.
+    if (
+        _LEARN_PLATFORM_LINK.search(raw)
+        and _LEARN_SAVE_VERB.search(raw)
+        and not _LEARN_NEGATIVE.search(raw)
+    ):
+        urls = [_clean_link(match) for match in _LEARN_URL.findall(raw)]
+        urls = [url for url in urls if url]
+        if urls:
+            url = urls[0]
+            return {
+                "action": "save_platform_link",
+                "steps": [url],
+                "platform_link": url,
+                "summary": (
+                    f"Platform link save kar rahi hoon: {url}\n"
+                    "Jab koi bhi link maange, yahi bhejungi."
+                ),
+            }
     if _LEARN_BLOCK_LINKS.search(raw):
         return {"action": "block_links", "steps": [raw], "summary": f"Restrict links: {raw[:140]}"}
     return {"action": "add", "steps": [raw], "summary": f"Add shared instruction: {raw[:140]}"}
 
 
 def _learn_confirm_prompt(draft: Dict[str, Any]) -> str:
-    action = {
-        "add": "add karna",
+    action = draft.get("action")
+    if action == "save_platform_link":
+        url = draft.get("platform_link") or (draft.get("steps") or [""])[0]
+        return (
+            f"Samajh gayi. Platform link save kar rahi hoon:\n{url}\n\n"
+            "Jab koi bhi link maange, yahi bhejungi. Confirm ke liye 'yes' likho."
+        )
+    label = {
+        "add": "nayi instruction save karna",
         "update": "purani instruction badalna",
         "update_last": "aakhri lesson update karna",
-        "remove": "matching instruction remove karna",
-        "remove_last": "aakhri lesson remove karna",
-        "remove_all": "saare saved lessons remove karna",
+        "remove": "matching instruction hataana",
+        "remove_last": "aakhri lesson hataana",
+        "remove_all": "saare saved lessons hataana",
         "block_links": "link restriction save karna",
         "allow_links": "link restrictions hataana",
-    }.get(draft.get("action"), "save karna")
+    }.get(action, "baat yaad rakhna")
     return (
-        f"Samajh gayi: main {action} chahti hoon.\n{draft.get('summary', '')}\n\n"
-        "Confirm karein? Reply 'yes' ya 'confirm'. "
-        "Badalne ke liye nayi baat likhein, ya 'cancel'."
+        f"Theek hai, main {label} chahti hoon.\n{draft.get('summary', '')}\n\n"
+        "Confirm ke liye 'yes' likho. Badalna ho to nayi baat likh do, "
+        "chhodne ke liye 'cancel'."
     )
 
 
-def _execute_learning(steps: List[str]) -> Dict[str, Any]:
+def _execute_learning(steps: List[str], action: Optional[str] = None) -> Dict[str, Any]:
+    if action == "save_platform_link":
+        return _save_platform_link(next((step for step in steps if step and step.strip()), ""))
     results = [_save_persona_learning(step) for step in steps if step and step.strip()]
     removed = sum(1 for result in results if result.get("action") == "deleted")
     if any(result.get("action") == "allowed" for result in results):
@@ -2549,13 +2769,19 @@ def _execute_learning(steps: List[str]) -> Dict[str, Any]:
 
 
 def _learn_result_message(result: Dict[str, Any]) -> str:
+    if result["action"] == "platform_link_saved":
+        url = _clean_link(result.get("url"))
+        return (
+            f"✅ Ho gaya. Platform link save ho gaya: {url}\n"
+            "Ab jab koi link maange, yahi bhejungi."
+        )
     if result["action"] == "deleted":
         return f"✅ Theek hai, {result['count']} saved lesson(s) remove ho gaye. Base persona safe hai."
     if result["action"] == "not_found":
         return "Koi matching saved lesson nahi mila. Exact word/phrase ke saath /learn forget <text> try karo."
     if result["action"] == "allowed":
         return "✅ Link restrictions removed."
-    return "✅ Samajh gayi, yaad rakhungi. persona.json mein save kar diya."
+    return "✅ Samajh gayi, yaad rakhungi. Nayi baat save kar di."
 
 
 async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2582,6 +2808,26 @@ async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(_learn_confirm_prompt(draft))
 
 
+def _looks_like_learning_text(text: str) -> bool:
+    """Guard the /learn loop so ordinary chat never becomes a stale lesson draft."""
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if _LEARN_CANCEL.match(raw) or _LEARN_CONFIRM.match(raw):
+        return True
+    if _LEARN_VIEW.search(raw) or _LEARN_REMOVE.match(raw) or _LEARN_CHANGE.search(raw):
+        return True
+    if _LEARN_ALLOW_LINKS.search(raw) or _LEARN_BLOCK_LINKS.search(raw):
+        return True
+    if _LEARN_PLATFORM_LINK.search(raw) and _LEARN_SAVE_VERB.search(raw):
+        return True
+    return bool(re.search(
+        r"\b(learn|seekh|sikh|save|sav|yaad|store|remember|instruction|rule|lesson|"
+        r"hamesha|always|reply|jawab|answer)\b",
+        raw, re.IGNORECASE,
+    ))
+
+
 async def handle_admin_learning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Confirmation / correction loop for /learn. Non-admins are ignored completely."""
     message = update.effective_message
@@ -2592,6 +2838,9 @@ async def handle_admin_learning(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Migrate an old-style /learn-without-args session safely.
     if not session and context.user_data.get("awaiting_learning"):
+        if not _looks_like_learning_text(text):
+            context.user_data["awaiting_learning"] = False
+            return
         draft = parse_learning_intent(text)
         if draft["action"] == "view":
             context.user_data["awaiting_learning"] = False
@@ -2606,20 +2855,30 @@ async def handle_admin_learning(update: Update, context: ContextTypes.DEFAULT_TY
 
     if _LEARN_CANCEL.match(text):
         context.user_data["learning_session"] = None
+        context.user_data["awaiting_learning"] = False
         await message.reply_text("OK, /learn session cancel kar diya. Kuch save nahi hua.")
         raise ApplicationHandlerStop
 
     if _LEARN_CONFIRM.match(text):
-        result = _execute_learning(session["steps"])
+        result = _execute_learning(session.get("steps") or [], session.get("action"))
         context.user_data["learning_session"] = None
+        context.user_data["awaiting_learning"] = False
         dm.audit("admin_learning_saved", update.effective_user.id, "persona.json",
-                 f"{session['action']}: {session['summary'][:160]}")
+                 f"{session.get('action', 'add')}: {str(session.get('summary', ''))[:160]}")
         await message.reply_text(_learn_result_message(result))
         raise ApplicationHandlerStop
+
+    if not _looks_like_learning_text(text):
+        # A normal question while a draft is open must not become a new lesson.
+        # Clear the stale draft and let the normal chat handler answer it.
+        context.user_data["learning_session"] = None
+        context.user_data["awaiting_learning"] = False
+        return
 
     draft = parse_learning_intent(text)
     if draft["action"] == "view":
         context.user_data["learning_session"] = None
+        context.user_data["awaiting_learning"] = False
         await message.reply_text(_learning_view(), parse_mode="HTML")
         raise ApplicationHandlerStop
     context.user_data["learning_session"] = draft
