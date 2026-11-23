@@ -1724,9 +1724,20 @@ def get_keyword_response(user_text: str) -> Optional[str]:
         # to the group join link for a platform/signup question.
         return None
 
+    # Admin-taught lessons are FINAL AUTHORITY. Never let a generic FAQ keyword
+    # (for example "link") override an admin's explicit instruction.
+    learned = load_persona().get("learned_from_admin") or []
+    if isinstance(learned, str):
+        learned = [learned]
+    if learned and re.search(r"\badmin\b", user_text_lower):
+        return None
+
+    # A generic "details" FAQ must not steal a company-details question.
     # Longest phrase first avoids "join" stealing "join link", and word
     # boundaries stop "hi" from matching inside "chahiye" or "bhejiye".
     for keyword in sorted(KEYWORD_RESPONSES, key=len, reverse=True):
+        if keyword == "details" and "company" in user_text_lower:
+            continue
         pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
         if re.search(pattern, user_text_lower):
             print(f"✅ Keyword match: '{keyword}' (saved API call!)")
