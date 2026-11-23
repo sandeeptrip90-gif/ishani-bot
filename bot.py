@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import httpx
 from dotenv import load_dotenv
+import mongo_logger
 try:
     from telethon import TelegramClient, events
     from telethon.sessions import StringSession
@@ -1602,6 +1603,57 @@ def company_brief(persona: Optional[Dict[str, Any]] = None, group_business: Opti
     }
     rendered = [_render_template(line, values) for line in lines]
     return "\n".join(part for part in rendered if part)
+
+
+def _safe_ai_endpoint(url: Any) -> str:
+    """Drop query strings so an API key embedded in a URL is never logged."""
+    try:
+        parsed = urlparse(str(url or ""))
+        return parsed._replace(query="", fragment="").geturl()
+    except Exception:
+        return ""
+
+
+def mongo_log_chat(*, user_id: int, first_name: str, user_text: str,
+                   model_reply: str, history: Optional[List[Dict[str, Any]]] = None,
+                   raw_model_reply: Optional[str] = None,
+                   system_instruction: Optional[str] = None,
+                   scope: str = "private", source: str = "telegram",
+                   response_kind: str = "ai", status: str = "ok",
+                   keyword_match: Optional[str] = None,
+                   latency_ms: Optional[int] = None,
+                   error: Optional[str] = None) -> bool:
+    """Queue one chat analysis document. Never throws into the reply path."""
+    if not mongo_logger.enabled():
+        return False
+    try:
+        cfg = dm.get_ai_config()
+        persona = load_persona()
+        prompts = persona.get("system_prompts") or {}
+        document = mongo_logger.build_document(
+            user_id=user_id,
+            first_name=first_name,
+            user_text=user_text,
+            model_reply=model_reply,
+            history=history,
+            raw_model_reply=raw_model_reply,
+            system_instruction=system_instruction,
+            provider=cfg.get("provider"),
+            endpoint=_safe_ai_endpoint(cfg.get("endpoint")),
+            model=cfg.get("model"),
+            scope=scope,
+            source=source,
+            response_kind=response_kind,
+            status=status,
+            keyword_match=keyword_match,
+            persona_version=prompts.get("version") if isinstance(prompts, dict) else None,
+            latency_ms=latency_ms,
+            error=error,
+        )
+        return mongo_logger.log_chat(document)
+    except Exception as exc:
+        print(f"⚠️ Mongo chat log skipped: {exc}", flush=True)
+        return False
 
 
 def persona_system_prompt() -> str:

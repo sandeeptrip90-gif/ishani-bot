@@ -2,3 +2,4 @@
 httpx
 anyio
 python-dotenv
+pymongo[srv]

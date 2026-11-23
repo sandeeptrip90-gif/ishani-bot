@@ -47,8 +47,11 @@ def _shape_reply(reply: str, is_group: bool, max_lines: int = 2) -> List[str]:
 
 
 async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, context,
-                         reply: str, chat_scope: str, is_group: bool, fraud_dm: bool = False) -> None:
-    """One delivery path for normal chat AND tool-backed answers."""
+                         reply: str, chat_scope: str, is_group: bool, fraud_dm: bool = False) -> str:
+    """One delivery path for normal chat AND tool-backed answers.
+
+    Returns the exact text that was delivered so it can be logged for analysis.
+    """
     b = _b()
     reply = b.apply_admin_link_controls(b.clean_reply_text(reply or ""))
     if not reply and ((b.load_persona().get("admin_learning_controls") or {}).get("block_all_links")
@@ -69,19 +72,45 @@ async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, 
     target = update.effective_message if getattr(update, "effective_message", None) else update.message
     for bubble in bubbles:
         await b._send_paced(target, bubble)
-    b.dm.append_chat(user_id, first_name, "bot", " | ".join(bubbles), scope=chat_scope)
+    delivered = " | ".join(bubbles)
+    b.dm.append_chat(user_id, first_name, "bot", delivered, scope=chat_scope)
+    return delivered
 
 
 # -------------------------- the answer --------------------------
 async def _answer(user_text: str, user_id: int, first_name: str, update, context) -> None:
     b = _b()
+    started = b._time.monotonic()
     chat = update.effective_chat
     is_group = bool(chat and chat.type in ("group", "supergroup"))
     chat_scope = f"group:{chat.id}" if is_group else "private"
     fraud_dm = bool(not is_group and b._FRAUD.search(user_text))
 
+    # Snapshot first: the document must show the context the model actually saw,
+    # not the user message we are about to append.
     history = b.dm.recent_chat(user_id, first_name, limit=40, scope=chat_scope)
     b.dm.append_chat(user_id, first_name, "user", user_text, scope=chat_scope)
+
+    def _log_turn(*, reply: str, raw_reply: str = "", response_kind: str = "ai",
+                  status: str = "ok", keyword_match: str = "", error: str = "",
+                  system_instruction: str = "") -> None:
+        """Queue one analysis document without touching the delivery path."""
+        b.mongo_log_chat(
+            user_id=user_id,
+            first_name=first_name,
+            user_text=user_text,
+            model_reply=reply,
+            history=history,
+            raw_model_reply=raw_reply or reply,
+            system_instruction=system_instruction,
+            scope=chat_scope,
+            source="telegram",
+            response_kind=response_kind,
+            status=status,
+            keyword_match=keyword_match,
+            latency_ms=int((b._time.monotonic() - started) * 1000),
+            error=error,
+        )
 
     has_media_type = bool(re.search(
         r"\b(pdf|document|file|brochure|guide|details?|photo|picture|image|poster|form|attachment)\b|"
@@ -95,9 +124,9 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
         asset = b.find_media_asset(user_text)
         if asset:
             await b.send_media_asset(context.bot, chat.id, asset)
-            b.dm.append_chat(user_id, first_name, "bot",
-                             f"Sent file: {asset.get('name') or asset.get('kind', 'file')}",
-                             scope=chat_scope)
+            media_note = f"Sent file: {asset.get('name') or asset.get('kind', 'file')}"
+            b.dm.append_chat(user_id, first_name, "bot", media_note, scope=chat_scope)
+            _log_turn(reply=media_note, response_kind="media", status="sent")
             return
 
     # The learned/canonical link rule is authoritative and must be resolved before
@@ -105,12 +134,20 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
     learned_link_reply = b.resolve_link_request_reply(user_text)
     keyword_reply = None if fraud_dm else (learned_link_reply or b.get_keyword_response(user_text))
     if keyword_reply:
+        keyword_kind = "learned_link" if learned_link_reply else "keyword_faq"
         reply = b.apply_admin_link_controls(b.clean_reply_text(keyword_reply))
         if reply:
-            for bubble in b._shape_reply(reply, is_group):
+            bubbles = b._shape_reply(reply, is_group)
+            for bubble in bubbles:
                 await b._send_paced(update.message, bubble)
-            b.dm.append_chat(user_id, first_name, "bot", reply, scope=chat_scope)
+            delivered = " | ".join(bubbles)
+            b.dm.append_chat(user_id, first_name, "bot", delivered, scope=chat_scope)
+            _log_turn(reply=delivered, response_kind="keyword", status="ok",
+                      keyword_match=keyword_kind)
             return
+        _log_turn(reply="", response_kind="keyword", status="blocked",
+                  keyword_match=keyword_kind, error="reply removed by link controls")
+        return
 
     group_business = {}
     group_settings = {}
@@ -142,18 +179,23 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
             history=history,
         )
         if response is None:
-            await b._send_paced(update.message, b.user_language_notice(
+            reply = b.user_language_notice(
                 user_text, "The server's a little busy right now. Please try again soon ⏳",
                 "Server thoda busy hai yaar, thodi der baad try karna ⏳",
                 "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
-            ))
+            )
+            await b._send_paced(update.message, reply)
+            _log_turn(reply=reply, status="no_response",
+                      error="AI returned no response", system_instruction=personal_system)
             return
 
-        await b._deliver_reply(
+        raw_reply = response.text if response and response.text else ""
+        delivered = await b._deliver_reply(
             user_text, user_id, first_name, update, context,
-            response.text if response and response.text else "",
-            chat_scope, is_group, fraud_dm,
+            raw_reply, chat_scope, is_group, fraud_dm,
         )
+        _log_turn(reply=delivered, raw_reply=raw_reply,
+                  system_instruction=personal_system)
 
     except Exception as e:
         error_msg = str(e)
@@ -177,10 +219,16 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
                     b.clean_reply_text(retry_response.text) if retry_response and retry_response.text else ""
                 )
                 if retry_reply:
-                    for bubble in b._shape_reply(retry_reply, is_group,
-                                                 max_lines=3 if fraud_dm else 2):
+                    bubbles = b._shape_reply(retry_reply, is_group,
+                                             max_lines=3 if fraud_dm else 2)
+                    for bubble in bubbles:
                         await b._send_paced(update.message, bubble)
-                    b.dm.append_chat(user_id, first_name, "bot", retry_reply, scope=chat_scope)
+                    delivered = " | ".join(bubbles)
+                    b.dm.append_chat(user_id, first_name, "bot", delivered, scope=chat_scope)
+                    _log_turn(reply=delivered,
+                              raw_reply=retry_response.text if retry_response else retry_reply,
+                              response_kind="ai_retry", status="ok_after_retry",
+                              system_instruction=personal_system)
                     return
             except Exception as retry_error:
                 print(f"❌ ERROR after 10s wait: {retry_error}")
@@ -196,6 +244,8 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
                 "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
             )
         await b._send_paced(update.message, fallback)
+        _log_turn(reply=fallback, status="error", error=error_msg,
+                  system_instruction=personal_system)
 
 
 # -------------------------- debounce + entry --------------------------
