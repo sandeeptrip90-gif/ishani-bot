@@ -1286,7 +1286,13 @@ def clean_reply_text(text: str) -> str:
     text = re.sub(r" +([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n *", "\n", text)
-    return text.strip()
+    # Local models fall back to stock assistant openers. Strip them so replies
+    # still sound like a person even when the persona prompt is ignored.
+    text = re.sub(
+        r"^(?:(?:great question|happy to help|certainly|sure|of course|bilkul|zaroor)[!.,]?\s*)+",
+        "", text, flags=re.IGNORECASE,
+    ).strip()
+    return text
 
 
 def user_language_notice(user_text: str, english: str, hinglish: str, hindi: str) -> str:
