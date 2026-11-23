@@ -21,7 +21,7 @@ _URI_ENV = "MONGODB_URI"
 _DB_ENV = "MONGODB_DB"
 _COLL_ENV = "MONGODB_COLLECTION"
 
-DEFAULT_DB = "telegram_bot_db"
+DEFAULT_DB = "ai_model_chat_db"
 DEFAULT_COLLECTION = "ai_model_chat_history"
 
 _MAX_TEXT = 4000
