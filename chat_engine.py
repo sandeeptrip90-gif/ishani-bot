@@ -35,7 +35,7 @@ async def _send_paced(msg, text: str) -> None:
     b._last_send = b._time.monotonic()
 
 
-def _shape_reply(reply: str, is_group: bool, max_lines: int = 2) -> List[str]:
+def _shape_reply(reply: str, is_group: bool, max_lines: int = 4) -> List[str]:
     """Split long answers on sentence boundaries, not only on newlines.
 
     A single long line used to lose everything after the first 1000 characters.
@@ -137,13 +137,11 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
             _log_turn(reply=media_note, response_kind="media", status="sent")
             return
 
-    # The learned/canonical link rule is authoritative and must be resolved before
-    # the static FAQ cache, which still contains the older Telegram join link.
-    learned_link_reply = b.resolve_link_request_reply(user_text)
-    keyword_reply = None if fraud_dm else (learned_link_reply or b.get_keyword_response(user_text))
-    if keyword_reply:
-        keyword_kind = "learned_link" if learned_link_reply else "keyword_faq"
-        reply = b.apply_admin_link_controls(b.clean_reply_text(keyword_reply))
+    # Deterministic link handling stays fast and authoritative. Verified FAQ
+    # answers are no longer sent verbatim; they are passed to the model below.
+    learned_link_reply = None if fraud_dm else b.resolve_link_request_reply(user_text)
+    if learned_link_reply:
+        reply = b.apply_admin_link_controls(b.clean_reply_text(learned_link_reply))
         if reply:
             bubbles = b._shape_reply(reply, is_group)
             for bubble in bubbles:
@@ -151,10 +149,10 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
             delivered = " | ".join(bubbles)
             b.dm.append_chat(user_id, first_name, "bot", delivered, scope=chat_scope)
             _log_turn(reply=delivered, response_kind="keyword", status="ok",
-                      keyword_match=keyword_kind)
+                      keyword_match="learned_link")
             return
         _log_turn(reply="", response_kind="keyword", status="blocked",
-                  keyword_match=keyword_kind, error="reply removed by link controls")
+                  keyword_match="learned_link", error="reply removed by link controls")
         return
 
     group_business = {}
@@ -171,10 +169,18 @@ async def _answer(user_text: str, user_id: int, first_name: str, update, context
         compact=False,
         group_business=group_business,
         include_company=bool(re.search(
-            r"\b(chelsea|company|join|signup|sign up|link|earning|profit|deposit|withdraw|prediction|app)\b",
+            r"\b(chelsea|company|join|signup|sign up|link|earning|profit|deposit|withdraw|prediction|app|service|platform|registration|register)\b",
             user_text, re.I,
         )),
+        user_text=user_text,
     )
+    faq_context = [] if fraud_dm else b.faq_context_for(user_text)
+    if faq_context:
+        personal_system += (
+            "\n\nVERIFIED FAQ CONTEXT (use only if relevant; never override admin "
+            "lessons, company facts, link rules, or the user's actual question):\n"
+            + "\n".join(f"- {keyword}: {reply}" for keyword, reply in faq_context)
+        )
     if is_group:
         personal_system += "\n" + b.group_system_addendum(chat, group_settings.get("links_allowed"))
     else:

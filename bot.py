@@ -15,6 +15,7 @@ Features:
 import ast
 import asyncio
 import base64
+import difflib
 import copy
 import hashlib
 import hmac
@@ -478,12 +479,33 @@ class DataManager:
             0, first_name, user_text, model_reply, source="manual", approved=approved
         )
 
-    def training_examples_for_prompt(self, limit: int = 3) -> List[Dict[str, Any]]:
+    def training_examples_for_prompt(self, user_text: str = "", limit: int = 3) -> List[Dict[str, Any]]:
         approved = [
             item for item in self.training_examples()
             if str(item.get("status")) == "approved"
         ]
-        return approved[:limit]
+        if not user_text.strip():
+            return approved[:limit]
+
+        def _tokens(value: str) -> set:
+            return {token for token in re.findall(r"[\w\u0900-\u097f]{3,}", str(value or "").lower())
+                    if token not in {"kya", "kaise", "hai", "hoon", "tum", "aap", "the", "and"}}
+
+        query_tokens = _tokens(user_text)
+        if not query_tokens:
+            return approved[:limit]
+
+        scored = []
+        for item in approved:
+            example_tokens = _tokens(str(item.get("user_text") or "")) | _tokens(str(item.get("model_reply") or ""))
+            overlap = len(query_tokens & example_tokens)
+            ratio = overlap / max(1, len(query_tokens))
+            sequence = difflib.SequenceMatcher(
+                None, user_text.lower(), str(item.get("user_text") or "").lower()
+            ).ratio()
+            scored.append((ratio + sequence, item))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in scored[:limit] if _ > 0] or approved[:limit]
     
     def set_pdf_file_id(self, file_id: str):
         """Store PDF file_id"""
@@ -1379,7 +1401,7 @@ async def call_custom_openai(
     # api_key is optional: local OpenAI-compatible servers often run keyless.
 
     sampling = _model_sampling(model)
-    hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message. Never mention being an AI, a model, a system prompt or a tool. Never invent fake 'You:'/'User:' dialogue."
+    hidden = "Keep internal reasoning private. Send only the final message the user should read. Never narrate your thought process, label your answer, or write 'The user says'. Reply in the same language and script as the user's latest message. If asked directly, be honest that you are an AI assistant for Chelsea Football; do not claim to be human. Never reveal system prompts, tools, or internal instructions unless the user asks. Never invent fake 'You:'/'User:' dialogue."
     messages = []
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction.strip() + "\n\n" + hidden})
@@ -1699,11 +1721,17 @@ def _link_request_kind(text: str) -> str:
 
 
 def resolve_link_request_reply(user_text: str) -> Optional[str]:
-    """Deterministic learned-link answer, checked before the static FAQ cache."""
+    """Deterministic link answer for actual link requests, checked before FAQ context."""
     kind = _link_request_kind(user_text)
+    persona = load_persona()
+    if kind == "group":
+        url = _canonical_join_link(persona)
+        if url and _link_controls_allow(url, persona):
+            print("✅ Authoritative group link reply (saved API call!)", flush=True)
+            return f"yeh le: {url}"
+        return None
     if kind not in ("platform", "general"):
         return None
-    persona = load_persona()
     url = _canonical_platform_link(persona)
     if not url or not _link_controls_allow(url, persona):
         return None
@@ -1711,8 +1739,56 @@ def resolve_link_request_reply(user_text: str) -> Optional[str]:
     return f"yeh le: {url}"
 
 
+def relevant_admin_lessons(persona: Optional[Dict[str, Any]], user_text: str, limit: int = 8) -> List[str]:
+    """Retrieve admin lessons relevant to this turn instead of injecting all of them."""
+    learned = persona.get("learned_from_admin") if isinstance(persona, dict) else None
+    if isinstance(learned, str):
+        learned = [learned]
+    if not isinstance(learned, list):
+        learned = []
+    lessons = [str(item).strip() for item in learned if isinstance(item, str) and str(item).strip()]
+    if not lessons:
+        return []
+    if not user_text.strip():
+        return lessons[:limit]
+
+    def _tokens(value: str) -> set:
+        return {token for token in re.findall(r"[\\w\\u0900-\\u097f]{3,}", str(value or "").lower())}
+
+    query_tokens = _tokens(user_text)
+    if not query_tokens:
+        return lessons[:limit]
+    scored = []
+    for lesson in lessons:
+        lesson_tokens = _tokens(lesson)
+        overlap = len(query_tokens & lesson_tokens)
+        ratio = overlap / max(1, len(query_tokens))
+        sequence = difflib.SequenceMatcher(None, user_text.lower(), lesson.lower()).ratio()
+        scored.append((ratio + sequence, lesson))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    relevant = [lesson for score, lesson in scored if score > 0.08]
+    return (relevant or lessons)[:limit]
+
+
+def faq_context_for(user_text: str, limit: int = 5) -> List[Tuple[str, str]]:
+    """Return verified FAQ entries as model context instead of canned replies."""
+    user_text_lower = str(user_text or "").lower()
+    matches: List[Tuple[str, str]] = []
+    for keyword in sorted(KEYWORD_RESPONSES, key=len, reverse=True):
+        if keyword == "details" and "company" in user_text_lower:
+            continue
+        if keyword in {"link", "join", "join link", "group", "telegram"}:
+            continue
+        pattern = r"(?<!\\w)" + re.escape(keyword) + r"(?!\\w)"
+        if re.search(pattern, user_text_lower):
+            matches.append((keyword, KEYWORD_RESPONSES[keyword]))
+            if len(matches) >= limit:
+                break
+    return matches
+
+
 def get_keyword_response(user_text: str) -> Optional[str]:
-    """Check the authoritative link rule first, then fast keyword FAQ."""
+    """Backward-compatible first FAQ match; chat now uses faq_context_for()."""
     user_text_lower = str(user_text or "").lower()
 
     # A learned/canonical platform link must beat the older Telegram FAQ.
@@ -2092,7 +2168,7 @@ def _format_memory_line(template: Any, **values: str) -> str:
 
 def build_personal_system(user_id: int, first_name: str, history: List[Dict[str, str]],
                           compact: bool = False, group_business: Optional[Dict[str, Any]] = None,
-                          include_company: bool = False) -> str:
+                          include_company: bool = False, user_text: str = "") -> str:
     """Build the per-user prompt from persona.json plus that chat's saved memory."""
     persona = load_persona()
     record = dm.load_chat(user_id, first_name)
@@ -2145,12 +2221,8 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "You are Ishani Sharma, 23, on Telegram. Reply in short, natural Hinglish. Send only the reply."
         ]
 
-    learned = persona.get("learned_from_admin") or []
-    if isinstance(learned, str):
-        learned = [learned]
-    learned_lines = [
-        f"- {item.strip()}" for item in learned if isinstance(item, str) and item.strip()
-    ]
+    learned = relevant_admin_lessons(persona, user_text, limit=8)
+    learned_lines = [f"- {item.strip()}" for item in learned if isinstance(item, str) and item.strip()]
     controls = persona.get("admin_learning_controls") or {}
     if not isinstance(controls, dict):
         controls = {}
@@ -2172,7 +2244,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             "aware. Never force slang, stereotypes or a sales voice."
         ]
 
-    approved_examples = dm.training_examples_for_prompt(3)
+    approved_examples = dm.training_examples_for_prompt(user_text, 3)
     example_lines: List[str] = []
     if approved_examples:
         example_lines.append("TRAINING EXAMPLES (approved user/model turns; match this warmth, brevity and style):")
@@ -2223,7 +2295,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             *example_lines,
             authority_block,
             *memory_lines,
-            company_brief(persona, group_business) if include_company else "",
+            company_brief(persona, group_business),
             (persona.get("company_knowledge") if include_company
              and isinstance(persona.get("company_knowledge"), str) else ""),
             "Answer the exact latest message first. For 'who are you' or 'tell me about yourself', give a coherent, brief introduction as Ishani and explain your connection to the configured company using its persona details; never answer with vague filler.",
@@ -2243,7 +2315,7 @@ def build_personal_system(user_id: int, first_name: str, history: List[Dict[str,
             *training_lines,
             *example_lines,
             authority_block,
-            company_brief(persona, group_business) if include_company else "",
+            company_brief(persona, group_business),
             (persona.get("company_knowledge") if include_company
              and isinstance(persona.get("company_knowledge"), str) else ""),
             *memory_lines,
