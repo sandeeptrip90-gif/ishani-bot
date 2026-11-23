@@ -1274,21 +1274,6 @@ LEFT_MESSAGES: List[str] = []
 DM_WELCOME_MESSAGES: List[str] = []
 
 # ========== ACKNOWLEDGMENT & CHAT ENDING WORDS ==========
-ACKNOWLEDGMENT_WORDS = {
-    "ok", "okay", "k", "thanks", "thank you", "thankyou",
-    "done", "theek hai", "shukriya", "samajh gaya",
-    "samajh gaye", "accha", "achi baat hai", "bilkul",
-    "understood", "got it", "yes", "haan",
-    "thik hai", "thik h", "alright", "cool", "nice"
-}
-
-CHAT_ENDING_WORDS = {
-    "bye", "goodbye", "bye bye", "khuda hafiz",
-    "alvida", "see you", "tc", "take care",
-    "later", "see ya", "cya", "exit", "quit",
-    "stop", "band karo", "enough", "jaata hoon"
-}
-
 def clean_reply_text(text: str) -> str:
     """Strip thinking dumps and RAG citation junk. Telegram only gets the reply."""
     if not text:
@@ -2672,30 +2657,7 @@ async def scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
             print(f"⚠️ Could not send scheduled message to {group_id}: {e}", flush=True)
 
 # ================= GROUP MODERATION =================
-def _message_has_link(message) -> bool:
-    text = message.text or message.caption or ""
-    if has_any_links(text):
-        return True
-    entities = list(message.entities or []) + list(message.caption_entities or [])
-    return any(getattr(entity, "type", "") in ("url", "text_link") for entity in entities)
 
-
-def _message_has_inline_buttons(message) -> bool:
-    markup = message.reply_markup
-    return bool(markup and getattr(markup, "inline_keyboard", None))
-
-
-_ABUSE_OR_THREAT = re.compile(
-    r"("
-    r"\b(i will kill|i'll kill|kill you|murder you|rape you|beat you)\b|"
-    r"mar dunga|maar dunga|jaan se maar|goli mar|bomb maar|kat dunga|thappad marunga|"
-    r"madarchod|behenchod|bhosdik|chutiya|chutiye|gaandu|randi|harami|kameena|kamini|"
-    r"\b(fuck you|bastard|bitch|asshole|motherfucker)\b|"
-    r"\b(company|chelsea|user|bande|ladki|ladke|admin)\b.{0,24}\b(kutta|kutti|suar|bewakoof|nalayak|haramkhor)\b|"
-    r"\b(kutta|kutti|suar|bewakoof|nalayak|haramkhor)\b.{0,24}\b(company|chelsea|user|bande|ladki|ladke|admin)\b"
-    r")",
-    re.IGNORECASE,
-)
 
 
 _FRAUD = re.compile(
@@ -2705,117 +2667,12 @@ _FRAUD = re.compile(
 )
 # Answer unsafe group messages right there. No "come to DM" pressure — the user
 # asked in the group, so the clarification belongs in the group.
-_GROUP_CONTAINMENT_LINE = "yahi bata deti hoon, kya confusion hai?"
-_DM_CONTAINMENT_LINE = "group me tumhari baat delete hui, yahi baat karte hain."
 
 
-def _message_is_abuse_or_threat(message) -> bool:
-    """Gaali or a threat aimed at a person or a company. A complaint is not abuse."""
-    text = message.text or message.caption or ""
-    return bool(_ABUSE_OR_THREAT.search(text))
 
 
-def _message_has_fraud_claim(message) -> bool:
-    text = message.text or message.caption or ""
-    return bool(_FRAUD.search(text))
 
 
-def _mention_text(user) -> str:
-    """Username tag when available, tg:// link otherwise."""
-    if getattr(user, "username", None):
-        return f"@{user.username}"
-    name = html.escape(str(getattr(user, "first_name", None) or "Friend"))
-    return f'<a href="tg://user?id={user.id}">{name}</a>'
-
-
-async def _contain_group_message(update, context, user, chat, label: str) -> None:
-    """Remove the unsafe post, then answer calmly in the same group.
-
-    Earlier this also tried to DM the person. That read as 'go somewhere else',
-    so containment now stays public and the follow-up question is answered here.
-    """
-    await _delete_and_verify(update.effective_message)
-    tag = _mention_text(user)
-    await context.bot.send_message(
-        chat_id=chat.id,
-        text=f"{tag} {_GROUP_CONTAINMENT_LINE}",
-        parse_mode="HTML",
-    )
-    print(f"🧹 {label} contained from {user.id}", flush=True)
-
-    try:
-        update_lead_state(user.id, "", user.first_name or "User", flags={"contained": True})
-    except Exception as e:
-        print(f"⚠️ Could not flag contained lead {user.id}: {e}", flush=True)
-
-
-async def _is_group_admin(chat, user_id: int) -> bool:
-    try:
-        member = await chat.get_member(user_id)
-    except Exception as e:
-        print(f"⚠️ Could not check member {user_id}: {e}", flush=True)
-        return False
-    return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-
-
-async def _delete_and_verify(message) -> bool:
-    """Delete a group message, then delete again. 'not found' on the second try means it is gone."""
-    try:
-        await message.delete()
-    except Exception as e:
-        err = str(e).lower()
-        if "not found" in err:
-            print(f"✅ Message {message.message_id} already gone", flush=True)
-            return True
-        print(f"⚠️ Could not delete message {message.message_id}: {e}", flush=True)
-        return False
-    try:
-        await message.delete()
-        print(f"⚠️ Message {message.message_id} still existed after the first delete", flush=True)
-        return False
-    except Exception as e:
-        gone = "not found" in str(e).lower()
-        print(
-            f"✅ Verified message {message.message_id} deleted" if gone else f"⚠️ Recheck failed for {message.message_id}: {e}",
-            flush=True,
-        )
-        return gone
-
-
-async def moderate_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove non-admin bots, links, and inline-button posts. Confirm the message is gone."""
-    message = update.effective_message
-    chat = update.effective_chat
-    user = update.effective_user
-    if not message or not chat or not user or chat.type not in ("group", "supergroup"):
-        return
-    if user.id == context.bot.id:
-        return
-
-    is_admin = await _is_group_admin(chat, user.id)
-    if user.is_bot and not is_admin:
-        try:
-            await context.bot.ban_chat_member(chat.id, user.id)
-            print(f"🚫 Banned non-admin bot {user.id} from {chat.id}", flush=True)
-        except Exception as e:
-            print(f"⚠️ Could not ban bot {user.id}: {e}", flush=True)
-        await _delete_and_verify(message)
-        raise ApplicationHandlerStop
-
-    if is_admin:
-        # Admins may post links/buttons. Never delete their posts and, crucially,
-        # do not stop the handler chain: the chat and broadcast handlers run in
-        # later groups and need to see admin messages too.
-        return
-    if _message_has_fraud_claim(message):
-        await _contain_group_message(update, context, user, chat, "Fraud claim")
-        raise ApplicationHandlerStop
-    if _message_is_abuse_or_threat(message):
-        await _contain_group_message(update, context, user, chat, "Abuse or threat")
-        raise ApplicationHandlerStop
-    if _message_has_link(message) or _message_has_inline_buttons(message):
-        await _delete_and_verify(message)
-        raise ApplicationHandlerStop
 
 
 # ================= MESSAGE HANDLERS =================
@@ -4308,31 +4165,6 @@ async def _finalize_with_results(text: str, personal_system: str, history: List[
     return apply_admin_link_controls(block), False
 
 
-async def _deliver_reply(user_text: str, user_id: int, first_name: str, update, context,
-                         reply: str, chat_scope: str, is_group: bool, fraud_dm: bool = False) -> None:
-    """One delivery path for normal chat AND tool-backed answers (persona shaping intact)."""
-    reply = apply_admin_link_controls(clean_reply_text(reply or ""))
-    if not reply and ((load_persona().get("admin_learning_controls") or {}).get("block_all_links")
-                      or (load_persona().get("admin_learning_controls") or {}).get("blocked_links")):
-        reply = user_language_notice(
-            user_text, "I can explain it here without sharing a link.",
-            "Link ke bina yahin samjha deti hoon 🙂",
-            "लिंक के बिना मैं यहीं समझा देती हूँ 🙂",
-        )
-    if not reply:
-        reply = user_language_notice(
-            user_text, "Sorry, I didn't quite catch that. Could you say it another way?",
-            "Sorry yaar, main samajh nahi paayi 😅 Ek baar aur bataoge?",
-            "माफ़ कीजिए, मैं ठीक से समझ नहीं पाई 😅 एक बार फिर बताएँगे?",
-        )
-    # Groups are answered where the question was asked. Never bolt a DM pitch
-    # onto an otherwise good answer — that is what made the bot feel pushy.
-    bubbles = _shape_reply(reply, is_group, max_lines=3 if fraud_dm else 2)
-    target = update.effective_message if getattr(update, "effective_message", None) else update.message
-    for bubble in bubbles:
-        await _send_paced(target, bubble)
-    dm.append_chat(user_id, first_name, "bot", " | ".join(bubbles), scope=chat_scope)
-
 
 async def _finalize_approved(token: str, result: str, context) -> None:
     """After approval/denial, return the outcome to the same AI conversation."""
@@ -4690,304 +4522,18 @@ async def handle_agent_request(update, context, text: str, user_id: int, first_n
                                 personal_system, history)
 
 
-_LINK_ONLY_RE = re.compile(r"^\s*(?:https?://|www\.)\S+\s*$", re.IGNORECASE)
 _buf: Dict[int, List[str]] = {}
 _tasks: Dict[int, asyncio.Task] = {}
 DEBOUNCE_SEC = 8
 _last_send = 0.0
 
 
-async def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """One gate for every text message: DMs get answers, groups stay human-quiet."""
-    msg = update.message
-    user = update.effective_user
-    chat = update.effective_chat
-    if not msg or not user or not chat:
-        return False
-    text = (msg.text or "").strip()
-    if not text or user.is_bot:
-        return False
-    if getattr(msg, "sticker", None) or _LINK_ONLY_RE.match(text):
-        return False
-    norm = re.sub(r"[^\w\s]", "", text.lower()).strip()
-    if norm in ACKNOWLEDGMENT_WORDS or norm in CHAT_ENDING_WORDS:
-        return False
-    if chat.type not in ("group", "supergroup"):
-        return True
-
-    bot = context.bot
-    username = getattr(bot, "username", None)
-    if username and re.search(rf"@{re.escape(username)}\b", text, re.IGNORECASE):
-        return True
-    replied = msg.reply_to_message
-    if replied and getattr(replied, "from_user", None) and replied.from_user.id == getattr(bot, "id", None):
-        return True
-    # Admins are participants too. Silencing every admin here made the bot look
-    # dead for the owner while still answering other members. The group mode
-    # below applies equally to admins; "mentions" still requires @bot or a reply.
-    mode = GROUP_MODE
-    override = str(dm.get_group_settings(chat.id).get("group_mode") or "").lower()
-    if override in ("all", "mentions"):
-        mode = override
-    return mode == "all"
 
 
-async def _send_paced(msg, text: str) -> None:
-    """Keep a gap between sends so a fast lead cannot trip Telegram's flood limit."""
-    global _last_send
-    wait = _last_send + 1.2 - _time.monotonic()
-    if wait > 0:
-        await asyncio.sleep(wait)
-    await msg.reply_text(text)
-    _last_send = _time.monotonic()
 
 
-def _shape_reply(reply: str, is_group: bool, max_lines: int = 2) -> List[str]:
-    """Keep the answer readable in both places; groups are no longer truncated.
-
-    A group reply used to be sliced to its first line, which silently dropped the
-    explanation. Now both scopes get the same short, complete answer.
-    """
-    lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
-    limit = max_lines if not is_group else max(2, max_lines)
-    return [line[:1000] for line in lines[:limit]]
-
-
-async def _answer(user_text: str, user_id: int, first_name: str, update, context) -> None:
-    chat = update.effective_chat
-    is_group = bool(chat and chat.type in ("group", "supergroup"))
-    chat_scope = f"group:{chat.id}" if is_group else "private"
-    fraud_dm = bool(not is_group and _FRAUD.search(user_text))
-
-    history = dm.recent_chat(user_id, first_name, limit=40, scope=chat_scope)
-    dm.append_chat(user_id, first_name, "user", user_text, scope=chat_scope)
-
-    has_media_type = bool(re.search(
-        r"\b(pdf|document|file|brochure|guide|details?|photo|picture|image|poster|form|attachment)\b|"
-        r"(pdf|brochure|tasveer|chitra)", user_text, re.IGNORECASE
-    ))
-    media_request = has_media_type and bool(re.search(
-        r"\b(send|share|show|give|get|need|want|upload|forward|provide|bhejo|bhej|dikhao|chahiye|please|plz)\b",
-        user_text, re.IGNORECASE
-    ))
-    if media_request:
-        asset = find_media_asset(user_text)
-        if asset:
-            await send_media_asset(context.bot, chat.id, asset)
-            dm.append_chat(user_id, first_name, "bot",
-                           f"Sent file: {asset.get('name') or asset.get('kind', 'file')}", scope=chat_scope)
-            return
-
-    keyword_reply = None if fraud_dm else get_keyword_response(user_text)
-    if keyword_reply:
-        reply = apply_admin_link_controls(clean_reply_text(keyword_reply))
-        if reply:
-            for bubble in _shape_reply(reply, is_group):
-                await _send_paced(update.message, bubble)
-            dm.append_chat(user_id, first_name, "bot", reply, scope=chat_scope)
-            return
-
-    group_business: Dict[str, Any] = {}
-    group_settings: Dict[str, Any] = {}
-    if is_group:
-        group_business = dm.get_group_business(chat.id)
-        group_settings = dm.get_group_settings(chat.id)
-
-    await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
-    personal_system = build_personal_system(
-        user_id,
-        first_name,
-        history,
-        compact=False,
-        group_business=group_business,
-        include_company=bool(re.search(
-            r"\b(chelsea|company|join|signup|sign up|link|earning|profit|deposit|withdraw|prediction|app)\b",
-            user_text, re.I,
-        )),
-    )
-    if has_media_type:
-        personal_system += "\nIf the user asks for a file that is not among the files actually sent in this chat, say it is not available yet and suggest asking the admin. Never claim you attached or sent a file unless the bot actually sent it."
-    if group_settings.get("links_allowed") is False:
-        personal_system += "\nLinks are not permitted in this group. Explain without sharing any link."
-    if fraud_dm:
-        personal_system += (
-            "\nFRAUD OBJECTION IN DM: answer in at most 3 short lines. "
-            "Pattern: one-word validate, then reframe, then one small truth, then one small ask. "
-            "Never stop at 'haan sahi keh rahe ho' and never argue or get defensive. "
-            "Use naturally where relevant: 'kitne din se chala rahe ho?', '₹200 ka test kar liya?', "
-            "'withdraw minimum ₹500 hai isliye chhota amount atka lagta hai', "
-            "'predictions 100% nahi hoti, isliye chhota amount bolti hoon', "
-            "'screenshot bhejo, dekh leti hoon'. No guarantees, no pressure."
-        )
-
-    try:
-        response = await get_cached_response_api(
-            prompt=user_text,
-            system_instruction=personal_system,
-            history=history,
-        )
-        if response is None:
-            await _send_paced(update.message, user_language_notice(
-                user_text, "The server's a little busy right now. Please try again soon ⏳",
-                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
-                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
-            ))
-            return
-
-        await _deliver_reply(
-            user_text, user_id, first_name, update, context,
-            response.text if response and response.text else "",
-            chat_scope, is_group, fraud_dm,
-        )
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"❌ ERROR: {error_msg}")
-        fallback = user_language_notice(
-            user_text, "I hit a small technical issue. Please try again in a moment 🙏",
-            "Chhota sa technical issue aa gaya yaar, ek minute baad try karna 🙏",
-            "तकनीकी दिक्कत आ गई है, एक मिनट बाद फिर कोशिश कीजिए 🙏",
-        )
-        if "503" in error_msg:
-            print("⏳ 503 UNAVAILABLE — waiting 10 seconds before sending...")
-            await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
-            await asyncio.sleep(10)
-            try:
-                retry_response = await call_ai_with_retry(
-                    prompt=user_text,
-                    system_instruction=personal_system,
-                    history=history,
-                )
-                retry_reply = apply_admin_link_controls(
-                    clean_reply_text(retry_response.text) if retry_response and retry_response.text else ""
-                )
-                if retry_reply:
-                    for bubble in _shape_reply(retry_reply, is_group,
-                                               max_lines=3 if fraud_dm else 2):
-                        await _send_paced(update.message, bubble)
-                    dm.append_chat(user_id, first_name, "bot", retry_reply, scope=chat_scope)
-                    return
-            except Exception as retry_error:
-                print(f"❌ ERROR after 10s wait: {retry_error}")
-            fallback = user_language_notice(
-                user_text, "The server's a little busy right now. Please try again soon ⏳",
-                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
-                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
-            )
-        elif "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            fallback = user_language_notice(
-                user_text, "The server's a little busy right now. Please try again soon ⏳",
-                "Server thoda busy hai yaar, thodi der baad try karna ⏳",
-                "सर्वर अभी व्यस्त है, थोड़ी देर बाद फिर कोशिश कीजिए ⏳",
-            )
-        await _send_paced(update.message, fallback)
-
-
-async def _flush(user_id: int, first_name: str, update, context) -> None:
-    try:
-        await asyncio.sleep(DEBOUNCE_SEC)
-        merged = " | ".join(_buf.pop(user_id, [])).strip()
-        if merged:
-            await _answer(merged, user_id, first_name, update, context)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        print(f"❌ Debounced reply error: {e}", flush=True)
-    finally:
-        _tasks.pop(user_id, None)
-
-
-async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gate, buffer, then answer once per lead."""
-    if dm.is_bot_muted():
-        return
-
-    user_text = update.message.text
-    if not user_text:
-        return
-    user_id = update.effective_user.id
-    first_name = update.effective_user.first_name or "User"
-    chat = update.effective_chat
-    chat_scope = f"group:{chat.id}" if chat and chat.type in ("group", "supergroup") else "private"
-
-    if not await should_reply(update, context):
-        return
-
-    update_lead_state(user_id, user_text, first_name)
-    dm.update_user(user_id, first_name)
-
-    if request_needs_authorization(user_text) and not actor_may_authorize(user_id, chat):
-        dm.audit("blocked_unauthorized_request", user_id, str(chat.id), user_text[:160])
-        await _send_paced(
-            update.message,
-            "Ye ek request hai — sirf main admin ya assigned operator hi aisa kar sakte hain. "
-            "Mainne kuch change nahi kiya.",
-        )
-        return
-
-    if await handle_agent_request(update, context, user_text, user_id, first_name, chat_scope):
-        return
-
-    _buf.setdefault(user_id, []).append(user_text)
-    await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
-    task = _tasks.get(user_id)
-    if task is not None and not task.done():
-        return
-    _tasks[user_id] = asyncio.create_task(_flush(user_id, first_name, update, context))
 
 # ================= WELCOME & EXIT LOGIC =================
-async def welcome_new_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle member join/leave events"""
-    if not update.chat_member:
-        return
-    
-    old_member = update.chat_member.old_chat_member
-    new_member = update.chat_member.new_chat_member
-    
-    old_status = old_member.status
-    new_status = new_member.status
-    
-    try:
-        user = new_member.user if new_status == "member" else old_member.user
-        user_name = user.first_name if user and user.first_name else "Friend"
-        user_id = user.id
-        
-        reply_markup = None
-        # CASE 1: MEMBER JOINED
-        if old_status in ["left", "kicked"] and new_status == "member":
-            custom_welcome = ""
-            if update.effective_chat and update.effective_chat.type in ("group", "supergroup"):
-                custom_welcome = dm.get_group_business(update.effective_chat.id).get("welcome_message") or ""
-            if custom_welcome:
-                ai_text = _render_template(html.escape(custom_welcome), {"name": user_name})
-            else:
-                ai_text = _render_template(random.choice(WELCOME_MESSAGES), {"name": user_name})
-            username = getattr(context.bot, "username", None) or "IshaniBot"
-            deep = f"https://t.me/{username}?start=join_{user_id}"
-            reply_markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Ishani se baat karo", url=deep)
-            ]])
-        
-        # CASE 2: MEMBER LEFT/KICKED
-        elif old_status == "member" and new_status in ["left", "kicked"]:
-            ai_text = _render_template(random.choice(LEFT_MESSAGES), {"name": user_name})
-        
-        else:
-            return
-        
-        user_tag = f'<b><a href="tg://user?id={user_id}">{user_name}</a></b>'
-        final_message = f"{user_tag} — {ai_text}"
-        
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=final_message,
-            parse_mode="HTML",
-            reply_markup=reply_markup,
-        )
-    
-    except Exception as e:
-        print(f"❌ Welcome/Exit error: {e}")
-
 # ================= DOCUMENT REQUEST HANDLERS =================
 _MEDIA_WORDS = {"pdf", "document", "file", "photo", "picture", "image"}
 _MEDIA_STOP_WORDS = {"send", "share", "show", "give", "get", "me", "please", "the", "a", "an", "your", "you", "can", "could", "want", "need", "mujhe", "bhejo", "bhej", "do", "dikhao", "chahiye", "karo", "hai", "hey", "hi", "please"}
@@ -5053,10 +4599,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = (context.args[0] if getattr(context, "args", None) else "") or ""
     if str(payload).startswith("join_"):
         name = update.effective_user.first_name or "yaar"
-        await update.message.reply_text(
-            f"Arre {name}, aa gaye. Yahan aaram se baat karte hain.\n"
-            f"Ek baat bata — side income dekh rahe ho ya bas football dekhne aaye ho?"
-        )
+        await update.message.reply_text(start_dm_intro(name))
         return
 
     if update.effective_user.id == ADMIN_ID:
@@ -6703,31 +6246,6 @@ if TelegramClient and events and all((TG_API_ID, TG_API_HASH, TG_SESSION, GROUP_
         tg = None
 
 
-async def dm_new_member(user_id: int, name: str) -> bool:
-    """One short first DM per new member; the Path A deep link remains the fallback."""
-    if tg is None:
-        return False
-    sent = dm.data.setdefault("dm_sent", {})
-    if str(user_id) in sent:
-        return False
-    today = datetime.now().strftime("%Y-%m-%d")
-    counter = dm.data.get("dm_sent_day")
-    if not isinstance(counter, dict) or counter.get("date") != today:
-        counter = dm.data["dm_sent_day"] = {"date": today, "count": 0}
-    if int(counter.get("count") or 0) >= 20:
-        return False
-    text = _render_template(random.choice(DM_WELCOME_MESSAGES), {"name": name or "Friend"})
-    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())[:1000]
-    try:
-        await tg.send_message(user_id, text)
-        sent[str(user_id)] = datetime.now().isoformat(timespec="seconds")
-        counter["count"] = int(counter.get("count") or 0) + 1
-        dm.save()
-        return True
-    except Exception as e:
-        print(f"DM fail {user_id}: {e}", flush=True)
-        return False
-
 
 if tg is not None:
     @tg.on(events.ChatAction(chats=[_userbot_group_id]))
@@ -6759,6 +6277,33 @@ async def post_init(app):
             await tg.start()
         except Exception as e:
             print(f"⚠️ Telethon userbot could not start: {e}", flush=True)
+
+
+# ================= CHAT MODULE WIRING =================
+# Group chat, DM chat and the shared answer pipeline are separate modules now.
+# Bind this fully defined module so all three share one dm singleton, one buffer
+# and one task table, and so test-time patching of bot.X still reaches them.
+import group_chat as _group_chat
+import user_chat as _user_chat
+import chat_engine as _chat_engine
+
+for _chat_module in (_group_chat, _user_chat, _chat_engine):
+    _chat_module.bind(sys.modules[__name__])
+
+from group_chat import (
+    ACKNOWLEDGMENT_WORDS, CHAT_ENDING_WORDS, _LINK_ONLY_RE, _ABUSE_OR_THREAT,
+    _GROUP_CONTAINMENT_LINE, _DM_CONTAINMENT_LINE,
+    should_reply, group_system_addendum, _message_has_link,
+    _message_has_inline_buttons, _message_is_abuse_or_threat,
+    _message_has_fraud_claim, _mention_text, _contain_group_message,
+    _is_group_admin, _delete_and_verify, moderate_group, welcome_new_friend,
+)
+from user_chat import (
+    authorization_notice, start_dm_intro, dm_system_addendum, dm_new_member,
+)
+from chat_engine import (
+    _send_paced, _shape_reply, _deliver_reply, _answer, _flush, handle_ai_chat,
+)
 
 
 if __name__ == "__main__":
