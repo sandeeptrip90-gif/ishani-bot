@@ -49,6 +49,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 export const api = {
   overview: () => apiFetch<import("@/types").OverviewPayload>("/overview"),
   groups: () => apiFetch<import("@/types").GroupsPayload>("/groups"),
+  moderation: () => apiFetch<{ ok: boolean; settings: Record<string, boolean> }>("/moderation"),
+  saveModeration: (body: Record<string, unknown>) =>
+    apiFetch<{ ok: boolean; message?: string; settings?: Record<string, boolean> }>("/moderation", { method: "POST", body }),
   group: (id: number | string) => apiFetch<{ ok: boolean; group: import("@/types").Group }>(`/group?id=${encodeURIComponent(String(id))}`),
   members: (id: number | string) => apiFetch<import("@/types").MembersPayload>(`/group/members?id=${encodeURIComponent(String(id))}`),
   activity: () => apiFetch<{ ok: boolean; entries: import("@/types").AuditEntry[] }>("/activity"),

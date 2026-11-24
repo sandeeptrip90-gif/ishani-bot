@@ -621,6 +621,21 @@ class DataManager:
         settings = record.get("settings")
         return dict(settings) if isinstance(settings, dict) else {}
 
+    def moderation_defaults(self) -> Dict[str, bool]:
+        """Global moderation defaults used when a group has no explicit override."""
+        raw = self.data.get("group_moderation")
+        settings = raw if isinstance(raw, dict) else {}
+        return {key: group_setting_enabled(settings, key) for key in GROUP_MODERATION_KEYS}
+
+    def moderation_settings(self, group_id: Any) -> Dict[str, bool]:
+        """Effective moderation switches: per-group overrides beat global defaults."""
+        effective = self.moderation_defaults()
+        overrides = self.get_group_settings(group_id)
+        for key in GROUP_MODERATION_KEYS:
+            if key in overrides:
+                effective[key] = group_setting_enabled(overrides, key)
+        return effective
+
     def assign_group(self, admin_id: int, operator_id: int, group_id: Any) -> Dict[str, Any]:
         """Global admin gives one operator control of one group."""
         groups = self.get_groups()
@@ -6300,7 +6315,10 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
             return self._json(403, {"ok": False, "message": "This group is outside your scope."})
         record = dm.get_group(group_id) or {}
         business = record.get("business") if isinstance(record.get("business"), dict) else {}
-        settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
+        settings = dict(record.get("settings")) if isinstance(record.get("settings"), dict) else {}
+        moderation = dm.moderation_settings(group_id)
+        for key in GROUP_MODERATION_KEYS:
+            settings.setdefault(key, moderation[key])
         stats = record.get("stats") if isinstance(record.get("stats"), dict) else {}
         relevant = []
         for entry in reversed(dm.data.get("broadcast_log") or []):
@@ -6354,7 +6372,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                         pass
                 if bool(settings.get("bot_muted")):
                     muted_groups += 1
-                if group_setting_enabled(settings, "link_removal"):
+                if dm.moderation_settings(group_id)["link_removal"]:
                     link_protected_groups += 1
             if session["role"] == "master":
                 try:
@@ -6787,6 +6805,11 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/groups":
             return self._api_groups()
+        if path == "/api/moderation":
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            return self._json(200, {"ok": True, "settings": dm.moderation_defaults()})
         if path == "/api/group":
             return self._api_group_detail()
         if path == "/api/group/members":
@@ -7466,6 +7489,26 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                 return self._unauthorized()
             self._json(200, _test_ai_connection(data))
             return
+        if path == "/api/moderation":
+            session = self._auth()
+            if not session or session["role"] != "master":
+                return self._json(403, {"ok": False, "message": "Master owner only."})
+            key = str(data.get("key") or "").strip().lower()
+            if key not in GROUP_MODERATION_KEYS:
+                return self._json(400, {"ok": False, "message": "Unknown moderation switch."})
+            raw_value = data.get("value")
+            value = raw_value if isinstance(raw_value, bool) else _setting_enabled(raw_value, True)
+            current = dm.data.get("group_moderation")
+            current = dict(current) if isinstance(current, dict) else {}
+            current[key] = value
+            dm.data["group_moderation"] = current
+            dm.audit("group_moderation_updated", session["user_id"], "global", f"{key}={value}")
+            dm.save()
+            return self._json(200, {
+                "ok": True,
+                "message": f"{key} {'enabled' if value else 'disabled'} for all groups without an override.",
+                "settings": dm.moderation_defaults(),
+            })
         if path == "/api/group/settings":
             try:
                 session = self._auth()

@@ -223,7 +223,7 @@ async def moderate_group(update, context) -> None:
     if user.id == context.bot.id:
         return
 
-    settings = b.dm.get_group_settings(chat.id)
+    settings = b.dm.moderation_settings(chat.id)
     is_admin = await b._is_group_admin(chat, user.id)
     if user.is_bot and not is_admin:
         if b.group_setting_enabled(settings, "bot_removal"):

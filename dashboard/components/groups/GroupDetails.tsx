@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { MODERATION_TOGGLES } from "@/lib/moderation";
 import type { AuditEntry, Group, MembersPayload } from "@/types";
 import { Card } from "@/components/shared/Card";
 import { Badge } from "@/components/shared/Badge";
@@ -14,29 +15,6 @@ import { AdministratorsPanel, MembersPanel } from "./MembersPanel";
 
 const TABS = ["Overview", "Administrators", "Members", "Permissions", "Moderation", "Settings", "Activity"] as const;
 type Tab = (typeof TABS)[number];
-
-const MODERATION_TOGGLES = [
-  {
-    key: "link_removal",
-    label: "Auto-remove links",
-    description: "Delete link posts and inline buttons from non-admin members.",
-  },
-  {
-    key: "abuse_removal",
-    label: "Remove abuse / threats",
-    description: "Delete abusive or threatening posts and answer calmly in the group.",
-  },
-  {
-    key: "fraud_removal",
-    label: "Handle fraud claims",
-    description: "Remove fraud or scam allegations and clarify the facts in the group.",
-  },
-  {
-    key: "bot_removal",
-    label: "Ban non-admin bots",
-    description: "Ban and remove bots that are not administrators of this group.",
-  },
-] as const;
 
 export function GroupDetails({ groupId }: { groupId: number }) {
   const [tab, setTab] = useState<Tab>("Overview");

@@ -10,6 +10,7 @@ import { Button } from "@/components/shared/Button";
 import { Badge } from "@/components/shared/Badge";
 import { Notice } from "@/components/shared/Notice";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { GlobalModerationCard } from "@/components/groups/GlobalModerationCard";
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<{ endpoint?: string; model?: string; has_key?: boolean } | null>(null);
@@ -158,6 +159,8 @@ export default function SettingsPage() {
           )}
         </Card>
       </div>
+
+      <GlobalModerationCard />
 
       <div className="grid-2">
         <Card title="History &amp; instructions" subtitle="Existing persona data stays where it is">

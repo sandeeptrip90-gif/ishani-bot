@@ -60,12 +60,15 @@ async def run_moderation(settings, message=None):
     original_admin = bot._is_group_admin
     original_delete = bot._delete_and_verify
     original_contain = group_chat._contain_group_message
-    original_settings = bot.dm.get_group_settings
+    original_settings = bot.dm.moderation_settings
     try:
         bot._is_group_admin = fake_admin
         bot._delete_and_verify = fake_delete
         group_chat._contain_group_message = fake_contain
-        bot.dm.get_group_settings = lambda group_id: dict(settings)
+        bot.dm.moderation_settings = lambda group_id: {
+            **{key: True for key in bot.GROUP_MODERATION_KEYS},
+            **settings,
+        }
         update = SimpleNamespace(
             effective_message=message or FakeMessage(),
             effective_chat=FakeChat(),
@@ -82,7 +85,7 @@ async def run_moderation(settings, message=None):
         bot._is_group_admin = original_admin
         bot._delete_and_verify = original_delete
         group_chat._contain_group_message = original_contain
-        bot.dm.get_group_settings = original_settings
+        bot.dm.moderation_settings = original_settings
 
 
 def main():
@@ -111,6 +114,22 @@ def main():
     check("moderation keys exposed", set(bot.GROUP_MODERATION_KEYS) == {
         "link_removal", "abuse_removal", "fraud_removal", "bot_removal",
     })
+
+    original_data = bot.dm.data
+    try:
+        bot.dm.data = {
+            "groups": {"123": {"group_id": 123, "settings": {"link_removal": False}}},
+            "group_moderation": {"link_removal": True, "abuse_removal": False},
+        }
+        effective = bot.dm.moderation_settings(123)
+        check("per-group override wins", effective["link_removal"] is False, effective)
+        check("global default applies", bot.dm.moderation_settings(999)["abuse_removal"] is False)
+
+        bot.dm.data["group_moderation"]["link_removal"] = False
+        check("global disable applies without override", bot.dm.moderation_settings(999)["link_removal"] is False)
+    finally:
+        bot.dm.data = original_data
+
     print("ALL GROUP MODERATION TOGGLE CHECKS PASSED")
 
 

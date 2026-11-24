@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { GroupsPayload } from "@/types";
 import { GroupsTable } from "@/components/groups/GroupsTable";
+import { GlobalModerationCard } from "@/components/groups/GlobalModerationCard";
 import { Card } from "@/components/shared/Card";
 import { Button } from "@/components/shared/Button";
 import { Notice } from "@/components/shared/Notice";
@@ -50,6 +51,8 @@ export default function GroupsPage() {
         <StatCard icon="shield" label="Administrators" value={data?.stats?.administrators ?? 0} />
         <StatCard icon="owners" label="Owners" value={data?.stats?.owners ?? 0} />
       </div>
+
+      <GlobalModerationCard />
 
       <Card title="All groups" subtitle="Select groups for scoped broadcasts, then open Manage for full details">
         {data ? (
