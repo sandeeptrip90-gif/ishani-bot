@@ -15,6 +15,7 @@ A production-ready Telegram bot with advanced features including an admin panel,
 
 ### 2. ✅ Auto Link Delete System
 - Automatically deletes messages containing disallowed links in groups
+- **Dashboard control**: Groups → Moderation → toggle auto-remove links, abuse/threat removal, fraud-claim handling and non-admin bot removal on or off
 - **Exceptions**:
   - ✓ Group admins can post links
   - ✓ Bot can post whitelisted links

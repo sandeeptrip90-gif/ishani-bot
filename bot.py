@@ -82,6 +82,26 @@ GROUP_MODE = (os.environ.get("GROUP_MODE") or "all").strip().lower()
 if GROUP_MODE not in ("all", "mentions"):
     GROUP_MODE = "all"
 
+# Per-group moderation switches. Missing values mean "enabled", so existing
+# groups keep the same protection they had before the dashboard toggles existed.
+GROUP_MODERATION_KEYS = ("link_removal", "abuse_removal", "fraud_removal", "bot_removal")
+
+
+def _setting_enabled(value: Any, default: bool = True) -> bool:
+    """Read a boolean group setting, treating missing values as the default."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "haan", "y"}
+
+
+def group_setting_enabled(settings: Any, key: str, default: bool = True) -> bool:
+    """True when a group moderation switch is on (unset settings default to on)."""
+    if not isinstance(settings, dict):
+        return default
+    return _setting_enabled(settings.get(key), default)
+
 # Path B (optional): a real account can DM new members. Disabled unless all four
 # values are configured, so the default bot never needs Telethon.
 TG_API_ID = os.environ.get("TG_API_ID")
@@ -640,7 +660,7 @@ class DataManager:
     def set_group_details(self, actor_id: Any, admin_id: int, group_id: Any, key: str, value: Any) -> bool:
         """Operator may edit ONLY their assigned group's own details/settings."""
         allowed_business = {"name", "join_link", "welcome_message", "notes"}
-        allowed_settings = {"bot_muted", "links_allowed", "group_mode"}
+        allowed_settings = {"bot_muted", "links_allowed", "group_mode"} | set(GROUP_MODERATION_KEYS)
         key = (key or "").strip().lower()
         if key not in allowed_business | allowed_settings:
             return False
@@ -653,7 +673,7 @@ class DataManager:
             mode = str(value).strip().lower()
             record.setdefault("settings", {})[key] = mode if mode in ("all", "mentions") else GROUP_MODE
         elif key in allowed_settings:
-            flag = str(value).strip().lower() in {"1", "true", "yes", "on", "haan", "y"}
+            flag = _setting_enabled(value, False)
             record.setdefault("settings", {})[key] = flag
         else:
             record.setdefault("business", {})[key] = str(value).strip()[:500]
@@ -2766,7 +2786,11 @@ async def group_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"Name: {business.get('name') or '-'}\n"
             f"Link: {business.get('join_link') or '-'}\n"
             f"Welcome: {business.get('welcome_message') or '-'}\n"
-            f"Settings: links_allowed={settings.get('links_allowed', True)}, bot_muted={settings.get('bot_muted', False)}"
+            f"Settings: links_allowed={settings.get('links_allowed', True)}, bot_muted={settings.get('bot_muted', False)}, "
+            f"link_removal={group_setting_enabled(settings, 'link_removal')}, "
+            f"abuse_removal={group_setting_enabled(settings, 'abuse_removal')}, "
+            f"fraud_removal={group_setting_enabled(settings, 'fraud_removal')}, "
+            f"bot_removal={group_setting_enabled(settings, 'bot_removal')}"
         )
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -2798,7 +2822,8 @@ async def group_set_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"✅ Group {group_id} me '{key}' update ho gaya.")
     else:
         await update.effective_message.reply_text(
-            "Allowed keys: name, join_link, welcome_message, notes, bot_muted, links_allowed."
+            "Allowed keys: name, join_link, welcome_message, notes, bot_muted, links_allowed, "
+            "link_removal, abuse_removal, fraud_removal, bot_removal."
         )
 
 
@@ -2914,7 +2939,8 @@ async def my_groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"\n<b>{html.escape(str(business.get('name') or 'Unnamed'))}</b> — <code>{group_id}</code>\n"
             f"Status: {record.get('registration_status', 'assigned')}\n"
-            f"Links allowed: {(record.get('settings') or {}).get('links_allowed', True)}"
+            f"Links allowed: {(record.get('settings') or {}).get('links_allowed', True)} · "
+            f"Auto link removal: {group_setting_enabled(record.get('settings'), 'link_removal')}"
         )
     await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -3658,7 +3684,7 @@ AGENT_SCHEMA = [
      {"message": {"type": "string"}, "group_ids": {"type": "array", "items": {"type": "integer"}}}, ["message"]),
     ("set_group_welcome", "Update the welcome message of one group owned by the actor.",
      {"group_id": {"type": "integer"}, "message": {"type": "string"}}, ["message"]),
-    ("set_group_setting", "Change a group's links_allowed or bot_muted setting. Requires approval.",
+    ("set_group_setting", "Change a group's links_allowed, bot_muted or moderation switch setting. Requires approval.",
      {"group_id": {"type": "integer"}, "key": {"type": "string"}, "value": {"type": "string"}}, ["group_id", "key", "value"]),
     ("delete_group_message", "Delete one specific message in the actor's own group. Requires approval.",
      {"group_id": {"type": "integer"}, "message_id": {"type": "integer"}}, ["group_id", "message_id"]),
@@ -5388,8 +5414,9 @@ async def _execute_approved_tool(token: str, actor_id: int, bot_obj) -> str:
         if not dm.is_group_owner(actor_id, group_id):
             return "❌ Aap is group ki setting change nahi kar sakte."
         key = str(args.get("key") or "")
-        if key not in ("links_allowed", "bot_muted", "group_mode"):
-            return "❌ Sirf links_allowed, bot_muted ya group_mode change ho sakte hain."
+        allowed_keys = ("links_allowed", "bot_muted", "group_mode") + GROUP_MODERATION_KEYS
+        if key not in allowed_keys:
+            return "❌ Sirf links_allowed, bot_muted, group_mode ya moderation switches change ho sakte hain."
         if not dm.set_group_details(actor_id, ADMIN_ID, group_id, key, args.get("value", "")):
             return "❌ Setting save nahi hui."
         current = dm.get_group_settings(group_id).get(key)
@@ -6327,7 +6354,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                         pass
                 if bool(settings.get("bot_muted")):
                     muted_groups += 1
-                if settings.get("links_allowed") is False:
+                if group_setting_enabled(settings, "link_removal"):
                     link_protected_groups += 1
             if session["role"] == "master":
                 try:
@@ -7453,7 +7480,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                 key = str(data.get("key") or "").strip().lower()
                 business_keys = {"name", "join_link", "welcome_message", "notes",
                                  "goodbye_message", "ai_instructions"}
-                setting_keys = {"bot_muted", "links_allowed", "spam_protection", "active", "group_mode"}
+                setting_keys = {"bot_muted", "links_allowed", "spam_protection", "active", "group_mode"} | set(GROUP_MODERATION_KEYS)
                 if key not in business_keys | setting_keys:
                     return self._json(400, {"ok": False, "message": "Setting key not allowed."})
                 record = dm.get_group(group_id)
@@ -7466,7 +7493,7 @@ class ConfigPageHandler(BaseHTTPRequestHandler):
                     mode = str(value).strip().lower()
                     record.setdefault("settings", {})[key] = mode if mode in ("all", "mentions") else GROUP_MODE
                 else:
-                    flag = str(value).strip().lower() in {"1", "true", "yes", "on", "haan", "y"}
+                    flag = _setting_enabled(value, False)
                     record.setdefault("settings", {})[key] = flag
                 dm.audit("group_details_updated", session["user_id"], str(group_id),
                          f"{key}={str(value)[:120]}")

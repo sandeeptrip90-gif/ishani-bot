@@ -223,26 +223,30 @@ async def moderate_group(update, context) -> None:
     if user.id == context.bot.id:
         return
 
+    settings = b.dm.get_group_settings(chat.id)
     is_admin = await b._is_group_admin(chat, user.id)
     if user.is_bot and not is_admin:
-        try:
-            await context.bot.ban_chat_member(chat.id, user.id)
-            print(f"🚫 Banned non-admin bot {user.id} from {chat.id}", flush=True)
-        except Exception as e:
-            print(f"⚠️ Could not ban bot {user.id}: {e}", flush=True)
-        await b._delete_and_verify(message)
+        if b.group_setting_enabled(settings, "bot_removal"):
+            try:
+                await context.bot.ban_chat_member(chat.id, user.id)
+                print(f"🚫 Banned non-admin bot {user.id} from {chat.id}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Could not ban bot {user.id}: {e}", flush=True)
+            await b._delete_and_verify(message)
         raise ApplicationHandlerStop
 
     if is_admin:
         # Admins may post links/buttons and still reach the chat handlers below.
         return
-    if b._message_has_fraud_claim(message):
+    if b.group_setting_enabled(settings, "fraud_removal") and b._message_has_fraud_claim(message):
         await _contain_group_message(update, context, user, chat, "Fraud claim")
         raise ApplicationHandlerStop
-    if b._message_is_abuse_or_threat(message):
+    if b.group_setting_enabled(settings, "abuse_removal") and b._message_is_abuse_or_threat(message):
         await _contain_group_message(update, context, user, chat, "Abuse or threat")
         raise ApplicationHandlerStop
-    if b._message_has_link(message) or b._message_has_inline_buttons(message):
+    if b.group_setting_enabled(settings, "link_removal") and (
+        b._message_has_link(message) or b._message_has_inline_buttons(message)
+    ):
         await b._delete_and_verify(message)
         raise ApplicationHandlerStop
 

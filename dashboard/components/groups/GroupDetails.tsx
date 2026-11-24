@@ -15,6 +15,29 @@ import { AdministratorsPanel, MembersPanel } from "./MembersPanel";
 const TABS = ["Overview", "Administrators", "Members", "Permissions", "Moderation", "Settings", "Activity"] as const;
 type Tab = (typeof TABS)[number];
 
+const MODERATION_TOGGLES = [
+  {
+    key: "link_removal",
+    label: "Auto-remove links",
+    description: "Delete link posts and inline buttons from non-admin members.",
+  },
+  {
+    key: "abuse_removal",
+    label: "Remove abuse / threats",
+    description: "Delete abusive or threatening posts and answer calmly in the group.",
+  },
+  {
+    key: "fraud_removal",
+    label: "Handle fraud claims",
+    description: "Remove fraud or scam allegations and clarify the facts in the group.",
+  },
+  {
+    key: "bot_removal",
+    label: "Ban non-admin bots",
+    description: "Ban and remove bots that are not administrators of this group.",
+  },
+] as const;
+
 export function GroupDetails({ groupId }: { groupId: number }) {
   const [tab, setTab] = useState<Tab>("Overview");
   const [group, setGroup] = useState<Group | null>(null);
@@ -47,10 +70,14 @@ export function GroupDetails({ groupId }: { groupId: number }) {
         welcome_message: String(business.welcome_message || ""),
         goodbye_message: String(business.goodbye_message || ""),
         ai_instructions: String(business.ai_instructions || ""),
-        links_allowed: String(Boolean(s.links_allowed)),
+        links_allowed: String(s.links_allowed === undefined ? true : Boolean(s.links_allowed)),
         spam_protection: String(Boolean(s.spam_protection)),
         active: String(s.active === undefined ? true : Boolean(s.active)),
         bot_muted: String(Boolean(s.bot_muted)),
+        link_removal: String(s.link_removal === undefined ? true : Boolean(s.link_removal)),
+        abuse_removal: String(s.abuse_removal === undefined ? true : Boolean(s.abuse_removal)),
+        fraud_removal: String(s.fraud_removal === undefined ? true : Boolean(s.fraud_removal)),
+        bot_removal: String(s.bot_removal === undefined ? true : Boolean(s.bot_removal)),
       });
     }
     if (people.data?.ok) setMembers(people.data);
@@ -104,6 +131,25 @@ export function GroupDetails({ groupId }: { groupId: number }) {
     setBusy(false);
     setNotice(`${changed} settings saved.`);
     void load();
+  };
+
+  const toggleModeration = async (key: string, label: string) => {
+    const next = settings[key] !== "true";
+    setSettings((current) => ({ ...current, [key]: String(next) }));
+    setBusy(true);
+    setError("");
+    setNotice("");
+    const result = await api.groupSettings({ group_id: groupId, key, value: String(next) });
+    setBusy(false);
+    if (result.error) {
+      setError(`${label}: ${result.error}`);
+      void load();
+      return;
+    }
+    setNotice(`${label} ${next ? "enabled" : "disabled"}.`);
+    setGroup((current) =>
+      current ? { ...current, settings: { ...(current.settings || {}), [key]: next } } : current,
+    );
   };
 
   const schedule = async () => {
@@ -191,6 +237,32 @@ export function GroupDetails({ groupId }: { groupId: number }) {
 
         {tab === "Moderation" && (
           <div className="stack">
+            <Card title="Group post controls" subtitle="Toggle what Ishani removes automatically from this group. All controls are on by default.">
+              <div className="toggle-grid">
+                {MODERATION_TOGGLES.map((item) => {
+                  const on = settings[item.key] === "true";
+                  return (
+                    <div className="toggle-item" key={item.key}>
+                      <div className="toggle-copy">
+                        <strong>{item.label}</strong>
+                        <span>{item.description}</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={item.label}
+                        className={`switch ${on ? "on" : ""}`}
+                        disabled={busy}
+                        onClick={() => void toggleModeration(item.key, item.label)}
+                      >
+                        <span className="switch-knob" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
             <div className="form-grid">
               <div className="field">
                 <label htmlFor="message-id">Telegram message ID</label>
